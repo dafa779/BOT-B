@@ -638,14 +638,12 @@ async def start_cmd(m: types.Message):
     if not is_private(m):
         return
 
-    await m.answer(main_menu_text(), reply_markup=menu_kb())
-    await m.answer("➕ 添加机器人到群", reply_markup=start_inline_kb())
+    text = get_setting(-1, "start_text") or (
+        "📌 记账机器人菜单\n\n"
+        "请点击下方按钮，或直接在群里输入指令。"
+    )
 
-
-@dp.message(lambda m: m.text == "使用说明")
-async def menu_help(m: types.Message):
-    await send_long_text(m.chat.id, help_text())
-
+    await m.answer(text, reply_markup=start_inline_kb(m.from_user.id))
 
 @dp.message(lambda m: m.text == "开始记账")
 async def menu_begin(m: types.Message):
