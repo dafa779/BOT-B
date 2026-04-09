@@ -212,17 +212,23 @@ def menu_kb():
     )
 
 
-def start_inline_kb():
+def start_inline_kb(user_id=None):
     if BOT_USERNAME:
         add_url = f"https://t.me/{BOT_USERNAME}?startgroup=add"
     else:
         add_url = "https://t.me/"
 
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="➕ 添加机器人到群", url=add_url)
-        ]
-    ])
+    buttons = [
+        [InlineKeyboardButton(text="➕ 添加机器人到群", url=add_url)]
+    ]
+
+    # Chỉ chủ bot mới thấy nút tạo mã khoá
+    if user_id == SUPER_ADMIN_ID:
+        buttons.append([
+            InlineKeyboardButton(text="🔑 创建激活码", callback_data="trial:create_code")
+        ])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def report_kb(chat_id):
