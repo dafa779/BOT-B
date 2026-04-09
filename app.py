@@ -525,11 +525,39 @@ async def daily_cut_loop():
 async def lifespan(app: FastAPI):
     init_super_admin()
 
-    webhook_url = BASE_URL + "/webhook" if BASE_URL else None
+    # Ưu tiên URL tự có trên Render, fallback sang BASE_URL
+    webhook_base = (
+        os.getenv("RENDER_EXTERNAL_URL")
+        or os.getenv("BASE_URL")
+        or ""
+    ).rstrip("/")
+
+    webhook_url = f"{webhook_base}/webhook" if webhook_base else None
+    print("webhook_url =", webhook_url)
+
+    # Đợi app ổn định một chút rồi mới set webhook
+    await asyncio.sleep(3)
+
     try:
         await bot.delete_webhook(drop_pending_updates=True)
+
         if webhook_url:
-            await bot.set_webhook(webhook_url)
+            # thử set webhook 3 lần
+            last_err = None
+            for i in range(3):
+                try:
+                    await bot.set_webhook(webhook_url)
+                    print("webhook set OK")
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    print(f"set_webhook attempt {i+1} failed:", e)
+                    await asyncio.sleep(2)
+
+            if last_err:
+                print("webhook setup error:", last_err)
+
     except Exception as e:
         print("webhook setup error:", e)
 
@@ -542,7 +570,6 @@ async def lifespan(app: FastAPI):
             await task
         except:
             pass
-
 
 app = FastAPI(lifespan=lifespan)
 
