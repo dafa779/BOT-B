@@ -93,6 +93,7 @@ class BroadcastFSM(StatesGroup):
 
 class TrialFSM(StatesGroup):
     waiting_code = State()
+    waiting_create_code = State()
 
 
 # ================= HELPERS =================
