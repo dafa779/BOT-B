@@ -25,6 +25,8 @@ from db import (
     get_setting,
     set_setting,
     delete_setting,
+    set_button_config,
+    get_all_button_configs,
     get_admin,
     add_admin,
     remove_admin,
@@ -40,26 +42,36 @@ from db import (
     save_member,
     get_members,
     add_transaction,
-    get_transaction,
     get_last_transaction,
     undo_transaction,
     clear_transactions,
     get_transactions,
+    set_trial_code,
+    get_trial_code,
+    add_access_user,
+    remove_access_user,
+    has_access_user,
+    get_access_users,
+    get_expired_access_users,
 )
 
 # ================= ENV =================
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-BASE_URL = os.getenv("BASE_URL", "").rstrip("/")
 PORT = int(os.getenv("PORT", "8080"))
 SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID", "0") or 0)
+
+# Render URL fallback
+BASE_URL = (os.getenv("RENDER_EXTERNAL_URL") or os.getenv("BASE_URL") or "").rstrip("/")
 
 # ================= BOT =================
 bot = Bot(
     token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode="HTML", link_preview_is_disabled=True)
+    default=DefaultBotProperties(link_preview_is_disabled=True)
 )
 dp = Dispatcher(storage=MemoryStorage())
+
+BOT_USERNAME = None
 
 # ================= DB =================
 init_db()
@@ -77,6 +89,10 @@ def init_super_admin():
 class BroadcastFSM(StatesGroup):
     waiting_content = State()
     waiting_confirm = State()
+
+
+class TrialFSM(StatesGroup):
+    waiting_code = State()
 
 
 # ================= HELPERS =================
@@ -110,8 +126,8 @@ def fmt_num(x):
 
 def get_chat_setting(chat_id, key, default=None):
     v = get_setting(chat_id, key, None)
-    if v is None:
-        v = get_setting(-1, key, default)
+    if v is None and chat_id != -1:
+        v = get_setting(-1, key, None)
     return v if v is not None else default
 
 
@@ -149,6 +165,30 @@ def is_admin_or_operator(chat_id, user: types.User):
     return is_operator(chat_id, user.id, user.username or "")
 
 
+def has_bot_access(user_id):
+    return get_admin(user_id) in ("super", "admin") or has_access_user(user_id)
+
+
+def parse_block_fields(body: str):
+    data = {}
+    current_field = None
+
+    for raw_line in (body or "").splitlines():
+        line = raw_line.rstrip()
+        if not line.strip():
+            continue
+
+        m = re.match(r"^([A-Za-z_0-9\u4e00-\u9fff]+)\s*[:：]\s*(.*)$", line)
+        if m:
+            current_field = m.group(1).strip()
+            data[current_field] = m.group(2).rstrip()
+        else:
+            if current_field:
+                data[current_field] = (data.get(current_field, "") + "\n" + line).rstrip("\n")
+
+    return data
+
+
 def menu_kb():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -164,78 +204,58 @@ def menu_kb():
             ],
             [
                 KeyboardButton(text="实时U价"),
-                KeyboardButton(text="管理客服"),
                 KeyboardButton(text="地址查询"),
+                KeyboardButton(text="管理客服"),
             ],
         ],
         resize_keyboard=True
     )
 
 
-def report_kb():
+def start_inline_kb():
+    if BOT_USERNAME:
+        add_url = f"https://t.me/{BOT_USERNAME}?startgroup=add"
+    else:
+        add_url = "https://t.me/"
+
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📘 完整账单", callback_data="report:full")]
+        [
+            InlineKeyboardButton(text="➕ 添加机器人到群", url=add_url)
+        ]
     ])
 
 
-def parse_user_ref(msg: types.Message):
-    """
-    优先：reply_to_message 的用户
-    否则：@username
-    """
-    if msg.reply_to_message and msg.reply_to_message.from_user:
-        u = msg.reply_to_message.from_user
-        return u.id, (u.username or ""), u.full_name
+def report_kb(chat_id):
+    buttons = get_all_button_configs(chat_id)
+    if not buttons:
+        buttons = get_all_button_configs(-1)
 
-    parts = (msg.text or "").split()
-    for p in parts[1:]:
-        if p.startswith("@"):
-            return None, p[1:].strip(), p
-    return None, None, None
+    rows = []
 
+    if buttons:
+        row = []
+        for text, url in buttons:
+            row.append(InlineKeyboardButton(text=text, url=url))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
 
-def parse_rate_fee_suffix(text):
-    # 支持：/7.8  *12%
-    rate = None
-    fee = None
+    # 永远保留一个“完整账单”按钮
+    rows.append([InlineKeyboardButton(text="📘 完整账单", callback_data="report:full")])
 
-    m = re.search(r"/\s*(-?\d+(?:\.\d+)?)", text)
-    if m:
-        rate = float(m.group(1))
-
-    m = re.search(r"\*\s*(-?\d+(?:\.\d+)?)%", text)
-    if m:
-        fee = float(m.group(1))
-
-    return rate, fee
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def split_target_prefix(text):
-    """
-    把 '张三+1000' / '张三 下发1000' 拆成 target + body
-    """
-    t = text.strip()
-    markers = ["下发", "P+", "P-", "+", "-"]
-    for mk in markers:
-        pos = t.find(mk)
-        if pos > 0:
-            target = t[:pos].strip()
-            body = t[pos:].strip()
-            if target:
-                return target, body
-    return None, t
+async def send_long_text(chat_id, text, reply_markup=None):
+    text = text or ""
+    chunks = [text[i:i + 3500] for i in range(0, len(text), 3500)] or [""]
+    for i, chunk in enumerate(chunks):
+        await bot.send_message(chat_id, chunk, reply_markup=reply_markup if i == 0 else None)
 
 
 def parse_amount_expr(expr, chat_id, default_direct_unit=False):
-    """
-    expr examples:
-      +10000
-      -10000/7.8
-      +10000*12%
-      +10000/7.8*12%
-      +7777u
-      1000R (handled via suffix R)
-    """
     rate_default = get_rate(chat_id)
     fee_default = get_fee(chat_id)
 
@@ -260,57 +280,61 @@ def parse_amount_expr(expr, chat_id, default_direct_unit=False):
     rate_used = rate_override if rate_override is not None else rate_default
     fee_used = fee_override if fee_override is not None else fee_default
 
-    # direct U
     if suffix == "u" or (default_direct_unit and suffix == "" and rate_override is None and fee_override is None):
         unit_amount = sign * amt
-        raw_amount = None
-        display = f"{fmt_num(unit_amount)}U"
         return {
-            "raw_amount": raw_amount,
+            "raw_amount": None,
             "unit_amount": unit_amount,
             "rate_used": rate_used,
             "fee_used": fee_used,
-            "display": display
         }
 
-    # convert from raw amount
     if rate_used == 0:
         return None
 
     net_ratio = 1 - (fee_used / 100.0)
     unit_amount = sign * amt / rate_used * net_ratio
     raw_amount = sign * amt
-    display = f"{fmt_num(amt)} / {fmt_num(rate_used)} * ({net_ratio:.2f}) = {fmt_num(unit_amount)}U"
     return {
         "raw_amount": raw_amount,
         "unit_amount": unit_amount,
         "rate_used": rate_used,
         "fee_used": fee_used,
-        "display": display
     }
 
 
-def extract_note(text, body):
-    # body may be "+1000 备注"
-    rest = body[len(text):].strip()
-    return rest if rest else ""
+def split_target_prefix(text):
+    t = text.strip()
+    markers = ["下发", "P+", "P-", "+", "-"]
+    for mk in markers:
+        pos = t.find(mk)
+        if pos > 0:
+            target = t[:pos].strip()
+            body = t[pos:].strip()
+            if target:
+                return target, body
+    return None, t
 
 
-def format_tx_line(tx, show_target=True):
+def format_tx_line(tx):
     tx_id, chat_id, user_id, username, display_name, target_name, kind, raw_amount, unit_amount, rate_used, fee_used, note, original_text, created_at, undone = tx
     tm = datetime.fromtimestamp(created_at).strftime("%H:%M:%S")
 
-    prefix = f"{tm} "
     if kind == "reserve":
-        return f"{prefix}{fmt_num(unit_amount)}U {target_name or note or ''}".strip()
+        line = f"{tm} {fmt_num(unit_amount)}U"
+        if note:
+            line += f" {note}"
+        if target_name:
+            line += f" {target_name}"
+        return line.strip()
 
     if raw_amount is not None:
-        line = f"{prefix}{fmt_num(raw_amount)} / {fmt_num(rate_used)} * ({1 - fee_used/100:.2f})={fmt_num(unit_amount)}U"
+        line = f"{tm} {fmt_num(raw_amount)} / {fmt_num(rate_used)} * ({1 - fee_used/100:.2f})={fmt_num(unit_amount)}U"
     else:
-        line = f"{prefix}{fmt_num(unit_amount)}U"
+        line = f"{tm} {fmt_num(unit_amount)}U"
 
     extra = []
-    if show_target and target_name:
+    if target_name:
         extra.append(target_name)
     if note:
         extra.append(note)
@@ -329,9 +353,9 @@ def summarize_transactions(txs):
     total_payout_unit = sum((t[8] or 0) for t in payout)
     total_reserve_unit = sum((t[8] or 0) for t in reserve)
 
-    due = total_income_unit
+    due = total_income_unit + total_reserve_unit
     paid = total_payout_unit
-    pending = due - paid + total_reserve_unit
+    pending = due - paid
 
     total_raw_income = sum((abs(t[7]) or 0) for t in income if t[7] is not None)
 
@@ -382,16 +406,16 @@ def report_text(chat_id, start_ts, end_ts, title="账单"):
     payout_txs = [t for t in txs if t[6] == "payout"]
     reserve_txs = [t for t in txs if t[6] == "reserve"]
 
-    lines = [f"📒 <b>{title}</b>"]
+    lines = [f"{title}"]
 
-    lines.append(f"\n<b>今日入款（{len(income_txs)}笔）</b>")
+    lines.append(f"\n今日入款（{len(income_txs)}笔）")
     if income_txs:
         for tx in income_txs:
             lines.append(format_tx_line(tx))
     else:
         lines.append("暂无入款")
 
-    lines.append(f"\n<b>今日下发（{len(payout_txs)}笔）</b>")
+    lines.append(f"\n今日下发（{len(payout_txs)}笔）")
     if payout_txs:
         for tx in payout_txs:
             lines.append(format_tx_line(tx))
@@ -399,12 +423,11 @@ def report_text(chat_id, start_ts, end_ts, title="账单"):
         lines.append("暂无下发")
 
     if reserve_txs:
-        lines.append(f"\n<b>账单寄存（{len(reserve_txs)}笔）</b>")
+        lines.append(f"\n账单寄存（{len(reserve_txs)}笔）")
         for tx in reserve_txs:
             lines.append(format_tx_line(tx))
 
-    lines.append(f"\n<b>分组统计（{len(get_groups())}组）</b>")
-    # 这里只做简单 group 统计：按 target_name 聚合
+    lines.append(f"\n分组统计（{len(get_groups())}组）")
     group_map = {}
     for tx in income_txs:
         key = tx[5] or "未命名"
@@ -431,27 +454,27 @@ def report_text(chat_id, start_ts, end_ts, title="账单"):
 
 def help_text():
     return (
-        "📚 <b>记账机器人操作说明</b>\n\n"
-        "<b>基础功能</b>\n"
+        "记账机器人操作说明\n\n"
+        "基础功能\n"
         "• 开始记账：开始\n"
         "• 停止记账：关闭记账\n"
         "• 打开发言：上课\n"
         "• 停止发言：下课\n\n"
-        "<b>配置</b>\n"
+        "配置\n"
         "• 设置汇率190\n"
         "• 设置费率7\n"
         "• 设置手续费20\n"
         "• 代付费率-5\n"
         "• 代付汇率8\n"
-        "• 设置火币汇率\n"
-        "• 设置欧易汇率\n"
-        "• 设置实时汇率\n\n"
-        "<b>操作员</b>\n"
+        "• 设置火币汇率190\n"
+        "• 设置欧易汇率190\n"
+        "• 设置实时汇率190\n\n"
+        "操作员\n"
         "• @xxxx 添加操作员\n"
         "• @xxxx 删除操作员\n"
         "• 显示操作员\n"
         "• 回复某人：添加操作员 / 删除操作员\n\n"
-        "<b>记账</b>\n"
+        "记账\n"
         "• +10000\n"
         "• +10000/7.8\n"
         "• -10000\n"
@@ -463,29 +486,53 @@ def help_text():
         "• 下发1000R\n"
         "• +1000 空格备注\n"
         "• P+2000 / P-1000\n\n"
-        "<b>查看</b>\n"
+        "查看\n"
         "• 账单 / /我\n"
         "• 我的账单（仅操作员）\n"
         "• 总账单\n"
         "• 上个月总账单\n"
         "• 撤销\n"
         "• 重置 / 清零 / 删除账单 / 结束账单\n\n"
-        "<b>广播</b>\n"
+        "广播\n"
         "• 群发广播\n\n"
-        "<b>提示</b>\n"
-        "• 回复账单消息可撤销最近一笔\n"
-        "• 本版本只做内部记账，不包含外部地址查询/余额追踪功能"
+        "试用\n"
+        "• 申请试用\n"
+        "• 激活码试用时长：10分钟\n"
     )
 
 
 def main_menu_text():
     return (
-        "📌 <b>记账机器人菜单</b>\n\n"
+        "记账机器人菜单\n\n"
         "请点击下方按钮，或直接在群里输入指令。"
     )
 
 
-# ================= BACKGROUND JOBS =================
+async def trial_expire_loop():
+    while True:
+        try:
+            now_ts = int(time.time())
+            expired_users = get_expired_access_users(now_ts)
+
+            for user_id, username, expires_at in expired_users:
+                try:
+                    remove_access_user(user_id)
+                    try:
+                        await bot.send_message(
+                            user_id,
+                            "⏳ 您的试用权限已过期，请重新获取激活码。"
+                        )
+                    except Exception as e:
+                        print("notify expired user failed:", e)
+                except Exception as e:
+                    print("remove expired access error:", e)
+
+        except Exception as e:
+            print("trial_expire_loop error:", e)
+
+        await asyncio.sleep(30)
+
+
 async def daily_cut_loop():
     last_cut_key = "last_daily_cut"
     while True:
@@ -503,16 +550,14 @@ async def daily_cut_loop():
                     last_cut = get_setting(-1, last_cut_key, "")
                     today_key = now.strftime("%Y-%m-%d")
                     if last_cut != today_key:
-                        # 对所有群执行日切（如果群未禁止）
                         for chat_id, _ in get_groups():
                             if str(get_setting(chat_id, "no_daily_cut", "0")) == "1":
                                 continue
                             clear_transactions(chat_id)
                             try:
-                                await bot.send_message(chat_id, f"🗓 <b>日切已完成</b>\n当前账单已清空，开始新的一天。")
+                                await bot.send_message(chat_id, "🗓 日切已完成，当前账单已清空，开始新的一天。")
                             except:
                                 pass
-
                         set_setting(-1, last_cut_key, today_key)
         except Exception as e:
             print("daily_cut_loop error:", e)
@@ -525,24 +570,22 @@ async def daily_cut_loop():
 async def lifespan(app: FastAPI):
     init_super_admin()
 
-    # Ưu tiên URL tự có trên Render, fallback sang BASE_URL
-    webhook_base = (
-        os.getenv("RENDER_EXTERNAL_URL")
-        or os.getenv("BASE_URL")
-        or ""
-    ).rstrip("/")
+    global BOT_USERNAME
+    try:
+        me = await bot.get_me()
+        BOT_USERNAME = me.username
+    except Exception as e:
+        print("get_me error:", e)
 
-    webhook_url = f"{webhook_base}/webhook" if webhook_base else None
+    webhook_url = f"{BASE_URL}/webhook" if BASE_URL else None
     print("webhook_url =", webhook_url)
 
-    # Đợi app ổn định một chút rồi mới set webhook
     await asyncio.sleep(3)
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)
 
         if webhook_url:
-            # thử set webhook 3 lần
             last_err = None
             for i in range(3):
                 try:
@@ -561,15 +604,23 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print("webhook setup error:", e)
 
-    task = asyncio.create_task(daily_cut_loop())
+    task1 = asyncio.create_task(daily_cut_loop())
+    task2 = asyncio.create_task(trial_expire_loop())
+
     try:
         yield
     finally:
-        task.cancel()
+        task1.cancel()
+        task2.cancel()
         try:
-            await task
+            await task1
         except:
             pass
+        try:
+            await task2
+        except:
+            pass
+
 
 app = FastAPI(lifespan=lifespan)
 
@@ -579,43 +630,79 @@ app = FastAPI(lifespan=lifespan)
 async def start_cmd(m: types.Message):
     if not is_private(m):
         return
+
     await m.answer(main_menu_text(), reply_markup=menu_kb())
+    await m.answer("➕ 添加机器人到群", reply_markup=start_inline_kb())
 
 
 @dp.message(lambda m: m.text == "使用说明")
 async def menu_help(m: types.Message):
-    await m.answer(help_text())
+    await send_long_text(m.chat.id, help_text())
 
 
 @dp.message(lambda m: m.text == "开始记账")
 async def menu_begin(m: types.Message):
     if not is_private(m):
         return
-    await m.answer(
-        "📎 <b>开始记账</b>\n\n"
-        "请把机器人添加进群，然后在群里输入：<b>开始</b>\n"
-        "设置汇率：<b>设置汇率190</b>\n"
-        "设置费率：<b>设置费率7</b>\n"
-        "开始后即可输入 <b>+10000</b>、<b>-10000</b>、<b>下发5000</b> 等。",
-        reply_markup=menu_kb()
+    text = (
+        "开始记账\n\n"
+        "请把机器人添加进群，然后在群里输入：开始\n"
+        "设置汇率：设置汇率190\n"
+        "设置费率：设置费率7\n"
+        "开始后即可输入 +10000、-10000、下发5000 等。"
     )
+    await m.answer(text, reply_markup=menu_kb())
 
 
 @dp.message(lambda m: m.text == "申请试用")
-async def menu_trial(m: types.Message):
-    await m.answer("✅ 试用功能请联系管理员开通。")
+async def menu_trial(m: types.Message, state: FSMContext):
+    if has_bot_access(m.from_user.id):
+        return await m.reply("✅ 您已拥有使用权限。")
+
+    await state.set_state(TrialFSM.waiting_code)
+    await m.reply(
+        "🔑 请输入激活码。\n\n"
+        "输入正确后，您将获得10分钟的机器人使用权限。"
+    )
+
+
+@dp.message(TrialFSM.waiting_code)
+async def receive_trial_code(m: types.Message, state: FSMContext):
+    if not m.text:
+        return
+
+    code = m.text.strip()
+    real_code = (get_trial_code() or "").strip()
+
+    if not real_code:
+        return await m.reply("❌ 当前未设置激活码，请联系管理员。")
+
+    if code != real_code:
+        return await m.reply("❌ 激活码错误，请重试。")
+
+    expires_at = int(time.time()) + 10 * 60
+
+    add_access_user(
+        user_id=m.from_user.id,
+        username=m.from_user.username or "",
+        granted_by=None,
+        expires_at=expires_at
+    )
+
+    await state.clear()
+    await m.reply("✅ 激活成功，您已获得10分钟的机器人使用权限。")
 
 
 @dp.message(lambda m: m.text == "自助续费")
 async def menu_renew(m: types.Message):
-    await m.answer("🔑 自助续费请联系后台管理员。")
+    await m.answer("🔑 自助续费请联系管理员。")
 
 
 @dp.message(lambda m: m.text == "实时U价")
 async def menu_rate(m: types.Message):
     rate = get_setting(-1, "rate", "190")
     fee = get_setting(-1, "fee", "7")
-    await m.answer(f"💹 当前全局汇率：{rate}\n💰 当前全局费率：{fee}%")
+    await m.answer(f"当前全局汇率：{rate}\n当前全局费率：{fee}%")
 
 
 @dp.message(lambda m: m.text == "管理客服")
@@ -631,7 +718,7 @@ async def menu_address_query(m: types.Message):
 @dp.message(lambda m: m.text == "分组功能")
 async def menu_group_func(m: types.Message):
     await m.answer(
-        "👥 <b>分组功能</b>\n\n"
+        "分组功能\n\n"
         "• 本版本支持按群记账\n"
         "• 同时可设置操作员\n"
         "• 也可使用全局操作员\n"
@@ -639,32 +726,81 @@ async def menu_group_func(m: types.Message):
     )
 
 
-@dp.message(lambda m: m.text == "群发广播")
-async def menu_broadcast(m: types.Message, state: FSMContext):
-    if not m.from_user:
-        return
+# ================= ADMIN / ACCESS =================
+@dp.message(lambda m: m.text and m.text.startswith("/settrialcode"))
+async def set_trial_code_cmd(m: types.Message):
+    if get_admin(m.from_user.id) != "super":
+        return await m.reply("❌ 只有超级管理员可以设置激活码")
 
-    if is_group_message(m):
-        if not is_admin_or_operator(m.chat.id, m.from_user):
-            return await m.reply("❌ 无权限")
-        scope = "current"
-        target_chat_id = m.chat.id
+    parts = m.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        return await m.reply("用法：/settrialcode ABC123")
+
+    code = parts[1].strip()
+    set_trial_code(code)
+    await m.reply(f"✅ 已设置激活码：{code}")
+
+
+@dp.message(lambda m: m.text and m.text.startswith("/addaccess"))
+async def add_access_cmd(m: types.Message):
+    if get_admin(m.from_user.id) != "super":
+        return await m.reply("❌ 只有超级管理员可以添加使用权限")
+
+    target_id = None
+    target_username = ""
+
+    if m.reply_to_message and m.reply_to_message.from_user:
+        u = m.reply_to_message.from_user
+        target_id = u.id
+        target_username = u.username or ""
     else:
-        # 私聊里默认群发到所有已保存群组；超级管理员才允许
-        if get_admin(m.from_user.id) != "super":
-            return await m.answer("❌ 只有超级管理员可在私聊里执行全局群发。")
-        scope = "all"
-        target_chat_id = -1
+        parts = m.text.split()
+        if len(parts) >= 2 and parts[1].isdigit():
+            target_id = int(parts[1])
 
-    await state.set_state(BroadcastFSM.waiting_content)
-    await state.update_data(scope=scope, target_chat_id=target_chat_id)
-    await m.answer(
-        "📢 <b>群发广播</b>\n\n"
-        "请直接发送你要广播的内容（支持文本、图片、视频、文档等）。"
-    )
+    if not target_id:
+        return await m.reply("用法：/addaccess 123456789 或回复某人消息后输入 /addaccess")
+
+    add_access_user(target_id, target_username, granted_by=m.from_user.id, expires_at=None)
+    await m.reply(f"✅ 已添加使用权限：{target_id}")
 
 
-# ================= ADMIN / OPERATOR =================
+@dp.message(lambda m: m.text and m.text.startswith("/delaccess"))
+async def del_access_cmd(m: types.Message):
+    if get_admin(m.from_user.id) != "super":
+        return await m.reply("❌ 只有超级管理员可以删除使用权限")
+
+    target_id = None
+    if m.reply_to_message and m.reply_to_message.from_user:
+        target_id = m.reply_to_message.from_user.id
+    else:
+        parts = m.text.split()
+        if len(parts) >= 2 and parts[1].isdigit():
+            target_id = int(parts[1])
+
+    if not target_id:
+        return await m.reply("用法：/delaccess 123456789 或回复某人消息后输入 /delaccess")
+
+    remove_access_user(target_id)
+    await m.reply(f"✅ 已删除使用权限：{target_id}")
+
+
+@dp.message(lambda m: m.text and m.text.startswith("/accesslist"))
+async def access_list_cmd(m: types.Message):
+    if get_admin(m.from_user.id) not in ("super", "admin"):
+        return await m.reply("❌ 无权限")
+
+    rows = get_access_users()
+    if not rows:
+        return await m.reply("暂无已授权用户")
+
+    text = "已授权用户列表\n\n"
+    for user_id, username, granted_by, granted_at, expires_at in rows:
+        exp = "永久" if expires_at is None else datetime.fromtimestamp(expires_at).strftime("%Y-%m-%d %H:%M:%S")
+        text += f"• {user_id} @{username or '-'} 到期：{exp}\n"
+    await send_long_text(m.chat.id, text)
+
+
 @dp.message(lambda m: m.text and is_cmd(m, "/addadmin", "/promote"))
 async def add_admin_cmd(m: types.Message):
     if get_admin(m.from_user.id) != "super":
@@ -714,18 +850,19 @@ async def admins_cmd(m: types.Message):
     if not rows:
         return await m.reply("暂无管理员")
 
-    text = "📋 <b>管理员列表</b>\n\n"
+    text = "管理员列表\n\n"
     for uid, role in rows:
-        text += f"• `{uid}` — {role}\n"
-    await m.reply(text)
+        text += f"• {uid} — {role}\n"
+    await send_long_text(m.chat.id, text)
 
 
 @dp.message(lambda m: m.text and is_cmd(m, "/myrole"))
 async def myrole_cmd(m: types.Message):
     role = get_admin(m.from_user.id)
-    await m.reply(f"👤 你的权限：{role or '无'}")
+    await m.reply(f"你的权限：{role or '无'}")
 
 
+# ================= OPERATOR =================
 @dp.message(lambda m: m.text and ("添加操作员" in m.text or "删除操作员" in m.text or "显示操作员" in m.text))
 async def operator_cmd(m: types.Message):
     if not is_group_message(m):
@@ -740,20 +877,20 @@ async def operator_cmd(m: types.Message):
     if "显示操作员" in txt:
         ops = get_operators(m.chat.id)
         gops = get_global_operators()
-        out = "👥 <b>当前群操作员</b>\n\n"
+        out = "当前群操作员\n\n"
         if ops:
             for uid, uname, role in ops:
                 out += f"• {uid or ''} @{uname or ''} {role}\n"
         else:
             out += "暂无群操作员\n"
 
-        out += "\n🌍 <b>全局操作员</b>\n"
+        out += "\n全局操作员\n"
         if gops:
             for uid, uname, role in gops:
                 out += f"• {uid or ''} @{uname or ''} {role}\n"
         else:
             out += "暂无全局操作员"
-        return await m.reply(out)
+        return await send_long_text(m.chat.id, out)
 
     add_flag = "添加操作员" in txt
     del_flag = "删除操作员" in txt
@@ -787,8 +924,6 @@ async def operator_cmd(m: types.Message):
 
 @dp.message(lambda m: m.text and ("全局操作人" in m.text or "全局记员" in m.text or "全部记员" in m.text))
 async def global_operator_cmd(m: types.Message):
-    if not is_private(m) and not is_group_message(m):
-        return
     if get_admin(m.from_user.id) != "super":
         return await m.reply("❌ 只有超级管理员可以设置全局操作员")
 
@@ -798,17 +933,18 @@ async def global_operator_cmd(m: types.Message):
         rows = get_global_operators()
         if not rows:
             return await m.reply("暂无全局操作员")
-        out = "🌍 <b>全局操作员</b>\n\n"
+        out = "全局操作员\n\n"
         for uid, uname, role in rows:
             out += f"• {uid or ''} @{uname or ''} {role}\n"
-        return await m.reply(out)
+        return await send_long_text(m.chat.id, out)
 
-    if "删除所有人操作员" in txt:
-        clear_operators(-1)
-        return await m.reply("✅ 已清空全局操作员")
+    if "删除所有人操作员" in txt or "取消全员" in txt:
+        if not is_group_message(m):
+            return await m.reply("请在群里使用此命令")
+        clear_operators(m.chat.id)
+        return await m.reply("✅ 已清空当前群操作员")
 
-    if "全部记员" in txt and "设置" in txt:
-        # 这里按“当前群已知成员”批量设置
+    if "全部记员" in txt and ("设置" in txt or "添加" in txt):
         if not is_group_message(m):
             return await m.reply("请在群里使用此命令")
         members = get_members(m.chat.id)
@@ -819,11 +955,38 @@ async def global_operator_cmd(m: types.Message):
                 pass
         return await m.reply("✅ 已将当前群已记录成员设置为操作员")
 
-    if "全部记员" in txt and ("删除" in txt or "取消" in txt):
-        if not is_group_message(m):
-            return await m.reply("请在群里使用此命令")
-        clear_operators(m.chat.id)
-        return await m.reply("✅ 已清空当前群操作员")
+    if "添加全局操作人" in txt:
+        uid = None
+        uname = None
+        if m.reply_to_message and m.reply_to_message.from_user:
+            u = m.reply_to_message.from_user
+            uid = u.id
+            uname = u.username or ""
+        else:
+            m2 = re.search(r"@([A-Za-z0-9_]+)", txt)
+            if m2:
+                uname = m2.group(1)
+
+        if uid is None and not uname:
+            return await m.reply("用法：@xxxx 添加全局操作人，或回复某人消息后输入")
+        add_operator(-1, user_id=uid, username=uname, role="operator")
+        return await m.reply("✅ 已添加全局操作人")
+
+    if "删除全局操作人" in txt:
+        uid = None
+        uname = None
+        if m.reply_to_message and m.reply_to_message.from_user:
+            uid = m.reply_to_message.from_user.id
+            uname = m.reply_to_message.from_user.username or ""
+        else:
+            m2 = re.search(r"@([A-Za-z0-9_]+)", txt)
+            if m2:
+                uname = m2.group(1)
+
+        if uid is None and not uname:
+            return await m.reply("用法：@xxxx 删除全局操作人，或回复某人消息后输入")
+        remove_operator(-1, user_id=uid, username=uname)
+        return await m.reply("✅ 已删除全局操作人")
 
 
 # ================= CONFIG =================
@@ -837,12 +1000,7 @@ async def global_operator_cmd(m: types.Message):
     m.text.startswith("删除代付汇率")
 ))
 async def config_cmd(m: types.Message):
-    if not is_group_message(m):
-        # 也允许私聊改全局配置
-        chat_id = -1
-    else:
-        ensure_group(m)
-        chat_id = m.chat.id
+    chat_id = m.chat.id if is_group_message(m) else -1
 
     if not is_admin_or_operator(chat_id if chat_id != -1 else -1, m.from_user):
         return await m.reply("❌ 无权限")
@@ -864,7 +1022,6 @@ async def config_cmd(m: types.Message):
         v = get_num(r"配置汇率\s*(-?\d+(?:\.\d+)?)")
         if not v:
             return await m.reply("用法：配置汇率8.5")
-        # 这里作为“微调值”保存
         set_chat_setting(chat_id, "rate_adjust", v)
         return await m.reply(f"✅ 配置汇率微调成功：{v}")
 
@@ -930,6 +1087,32 @@ async def config_cmd(m: types.Message):
         return await m.reply("✅ 已删除代付汇率配置")
 
 
+@dp.message(lambda m: m.text and m.text.startswith("设置按钮"))
+async def set_buttons_cmd(m: types.Message):
+    if not is_group_message(m):
+        return await m.reply("请在群里设置按钮")
+    if not is_admin_or_operator(m.chat.id, m.from_user):
+        return await m.reply("❌ 无权限")
+
+    body = m.text[len("设置按钮"):].strip()
+    data = parse_block_fields(body)
+
+    updated = 0
+    for i in range(1, 5):
+        key = f"按钮{i}"
+        val = data.get(key)
+        if not val or "|" not in val:
+            continue
+        text, url = val.split("|", 1)
+        text = text.strip()
+        url = url.strip()
+        if text and url:
+            set_button_config(m.chat.id, i, text, url)
+            updated += 1
+
+    await m.reply(f"✅ 按钮已更新：{updated}个")
+
+
 @dp.message(lambda m: m.text and (m.text in ("费率", "配置", "查看配置")))
 async def show_config_cmd(m: types.Message):
     chat_id = m.chat.id if is_group_message(m) else -1
@@ -943,8 +1126,8 @@ async def show_config_cmd(m: types.Message):
     cut_enabled = get_chat_setting(chat_id, "daily_cut_enabled", "0")
     no_daily_cut = get_chat_setting(chat_id, "no_daily_cut", "0")
 
-    await m.reply(
-        f"⚙️ <b>当前配置</b>\n\n"
+    text = (
+        "当前配置\n\n"
         f"固定汇率：{rate}\n"
         f"当前费率：{fee}%\n"
         f"单笔手续费：{single_fee}\n"
@@ -955,9 +1138,10 @@ async def show_config_cmd(m: types.Message):
         f"日切开关：{'开启' if str(cut_enabled) == '1' else '关闭'}\n"
         f"禁止日切：{'是' if str(no_daily_cut) == '1' else '否'}"
     )
+    await m.reply(text)
 
 
-# ================= START / STOP / CHAT PERMISSION =================
+# ================= START / STOP / PERMISSION =================
 @dp.message(lambda m: m.text and m.text in ("开始", "开始记账", "开启记账"))
 async def start_accounting(m: types.Message):
     if not is_group_message(m):
@@ -1008,7 +1192,6 @@ async def group_permission_cmd(m: types.Message):
         print("group_permission_cmd error:", e)
 
 
-# ================= LOCKED ROLES =================
 @dp.message(lambda m: m.text and m.text.startswith("锁定记账"))
 async def lock_income_cmd(m: types.Message):
     if not is_group_message(m):
@@ -1060,10 +1243,7 @@ async def lock_query_cmd(m: types.Message):
 # ================= DAILY CUT =================
 @dp.message(lambda m: m.text and m.text.startswith("设置日切"))
 async def set_daily_cut_cmd(m: types.Message):
-    if not is_group_message(m):
-        chat_id = -1
-    else:
-        chat_id = m.chat.id
+    chat_id = m.chat.id if is_group_message(m) else -1
 
     if not is_admin_or_operator(chat_id, m.from_user):
         return await m.reply("❌ 无权限")
@@ -1118,20 +1298,12 @@ async def undo_cmd(m: types.Message):
     if not is_admin_or_operator(m.chat.id, m.from_user):
         return await m.reply("❌ 无权限")
 
-    if m.reply_to_message:
-        # 如果回复到某条账单消息，尝试从文本里找 ID（如果有）
-        m2 = re.search(r"#TX:(\d+)", m.reply_to_message.text or "")
-        if m2:
-            tx_id = int(m2.group(1))
-            undo_transaction(tx_id)
-            return await m.reply(f"✅ 已撤销账单 ID: {tx_id}")
-
     last = get_last_transaction(m.chat.id)
     if not last:
         return await m.reply("暂无可撤销记录")
 
     undo_transaction(last[0])
-    await m.reply(f"✅ 已撤销上一笔账单 ID: {last[0]}")
+    await m.reply(f"✅ 已撤销上一笔账单：{last[0]}")
 
 
 @dp.message(lambda m: m.text and m.text in ("账单", "/我", "我的账单"))
@@ -1140,27 +1312,26 @@ async def my_bill_cmd(m: types.Message):
         return
     ensure_group(m)
 
-    keyword = None
     target_user_id = m.from_user.id
 
-    # “我的账单”仅操作员
     if m.text == "我的账单" and not is_admin_or_operator(m.chat.id, m.from_user):
         return await m.reply("❌ 仅操作员可查看“我的账单”")
 
-    # 如果回复某人消息，则看被回复人的账单
     if m.reply_to_message and m.reply_to_message.from_user:
         target_user_id = m.reply_to_message.from_user.id
 
     txs = get_transactions(m.chat.id, user_id=target_user_id)
     stats = summarize_transactions(txs)
-    await m.reply(
-        f"📒 <b>我的账单</b>\n\n"
+
+    text = (
+        "我的账单\n\n"
         f"入款：{len([t for t in txs if t[6]=='income'])} 笔\n"
         f"下发：{len([t for t in txs if t[6]=='payout'])} 笔\n"
         f"总入款：{fmt_num(stats['total_income_unit'])}U\n"
         f"已下发：{fmt_num(stats['paid'])}U\n"
         f"未下发：{fmt_num(stats['pending'])}U"
     )
+    await m.reply(text)
 
 
 @dp.message(lambda m: m.text and m.text.endswith(" 账单"))
@@ -1173,17 +1344,17 @@ async def search_bill_cmd(m: types.Message):
         return await m.reply("❌ 无权限")
 
     kw = m.text[:-3].strip()
-    if not kw:
+    if not kw or kw in ("账单", "我的账单"):
         return
 
     txs = get_transactions(m.chat.id, keyword=kw)
     if not txs:
         return await m.reply("暂无匹配账单")
 
-    text = f"🔎 <b>{kw} 的账单</b>\n\n"
+    text = f"{kw} 的账单\n\n"
     for tx in txs[:20]:
         text += format_tx_line(tx) + "\n"
-    await m.reply(text)
+    await send_long_text(m.chat.id, text)
 
 
 @dp.message(lambda m: m.text and m.text in ("总账单", "完整账单"))
@@ -1196,7 +1367,7 @@ async def full_report_cmd(m: types.Message):
 
     start_ts, end_ts = day_range()
     text = report_text(m.chat.id, start_ts, end_ts, title="今日总账")
-    await m.reply(text, reply_markup=report_kb())
+    await send_long_text(m.chat.id, text, reply_markup=report_kb(m.chat.id))
 
 
 @dp.message(lambda m: m.text and m.text in ("上个月总账单", "上月总账"))
@@ -1209,20 +1380,29 @@ async def last_month_report_cmd(m: types.Message):
 
     start_ts, end_ts = month_range(1)
     text = report_text(m.chat.id, start_ts, end_ts, title="上月总账")
-    await m.reply(text, reply_markup=report_kb())
+    await send_long_text(m.chat.id, text, reply_markup=report_kb(m.chat.id))
 
 
-@dp.message(lambda m: m.text and m.text.startswith("账单汇率"))
-async def bill_rate_fix_cmd(m: types.Message):
-    # 示例：账单汇率8更新8.5
-    if not is_group_message(m):
-        return
-    if not is_admin_or_operator(m.chat.id, m.from_user):
-        return await m.reply("❌ 无权限")
-    await m.reply("✅ 账单汇率修正功能已预留。若你要，我可以继续补上“按账单ID批量改汇率”的版本。")
+# ================= BROADCAST =================
+@dp.message(lambda m: m.text == "群发广播")
+async def menu_broadcast(m: types.Message, state: FSMContext):
+    if is_private(m):
+        if get_admin(m.from_user.id) != "super":
+            return await m.answer("❌ 只有超级管理员可在私聊里全局群发。")
+        scope = "all"
+        target_chat_id = -1
+    else:
+        ensure_group(m)
+        if not is_admin_or_operator(m.chat.id, m.from_user):
+            return await m.reply("❌ 无权限")
+        scope = "current"
+        target_chat_id = m.chat.id
+
+    await state.set_state(BroadcastFSM.waiting_content)
+    await state.update_data(scope=scope, target_chat_id=target_chat_id)
+    await m.reply("📢 请发送要广播的内容。")
 
 
-# ================= BROADCAST FSM =================
 @dp.message(BroadcastFSM.waiting_content)
 async def broadcast_receive_content(m: types.Message, state: FSMContext):
     data = await state.get_data()
@@ -1232,7 +1412,6 @@ async def broadcast_receive_content(m: types.Message, state: FSMContext):
     await state.update_data(
         source_chat_id=m.chat.id,
         source_message_id=m.message_id,
-        source_has_media=bool(m.photo or m.video or m.document or m.audio or m.voice),
         scope=scope,
         target_chat_id=target_chat_id
     )
@@ -1255,6 +1434,7 @@ async def broadcast_receive_content(m: types.Message, state: FSMContext):
 async def broadcast_callback(c: types.CallbackQuery, state: FSMContext):
     if not c.from_user:
         return
+
     data = await state.get_data()
     scope = data.get("scope", "current")
     source_chat_id = data.get("source_chat_id")
@@ -1302,32 +1482,13 @@ async def broadcast_callback(c: types.CallbackQuery, state: FSMContext):
     await c.message.edit_text(f"✅ 群发完成\n成功：{ok}\n失败：{fail}")
 
 
-# ================= USER JOIN =================
-@dp.message(lambda m: m.new_chat_members)
-async def new_members(m: types.Message):
-    ensure_group(m)
-    text = (
-        f"欢迎 {', '.join([u.full_name for u in m.new_chat_members])} 来到本群。\n"
-        "记账机器人已就绪。"
-    )
-    try:
-        await m.reply(text)
-    except:
-        pass
+# ================= OTHER MENU =================
+@dp.message(lambda m: m.text and m.text == "管理客服")
+async def show_support(m: types.Message):
+    await m.reply("👨‍💼 管理客服：请在这里填你的客服联系方式。")
 
 
-# ================= MY_CHAT_MEMBER =================
-@dp.my_chat_member()
-async def on_bot_member_update(e: types.ChatMemberUpdated):
-    try:
-        if e.new_chat_member.status in ("member", "administrator") and e.old_chat_member.status == "left":
-            save_group(e.chat.id, e.chat.title or "Unnamed group")
-            await bot.send_message(e.chat.id, "✅ 记账机器人已加入本群。")
-    except Exception as ex:
-        print("on_bot_member_update error:", ex)
-
-
-# ================= LEDGER PARSER =================
+# ================= AUTO LEDGER =================
 @dp.message()
 async def ledger_handler(m: types.Message):
     if not is_group_message(m):
@@ -1339,22 +1500,25 @@ async def ledger_handler(m: types.Message):
 
     ensure_group(m)
 
-    # 只在记账开启时处理
     if not get_enabled(m.chat.id):
         return
 
     txt = m.text.strip()
 
-    # 允许普通成员自己查自己的账单
-    if txt in ("账单", "/我"):
+    # 允许 +0 显示报表
+    if txt in ("+0", "-0", "0"):
+        start_ts, end_ts = day_range()
+        await send_long_text(
+            m.chat.id,
+            report_text(m.chat.id, start_ts, end_ts, title="今日账单"),
+            reply_markup=report_kb(m.chat.id)
+        )
         return
 
-    # 锁定记账/下发/查账
     locked_income_uid = get_chat_setting(m.chat.id, "locked_income_user_id", None)
     locked_payout_uid = get_chat_setting(m.chat.id, "locked_payout_user_id", None)
-    locked_query_uid = get_chat_setting(m.chat.id, "locked_query_user_id", None)
 
-    # ---------- 1) P+ / P- 寄存 ----------
+    # ---------- 寄存 ----------
     if txt.startswith("P+") or txt.startswith("P-"):
         if locked_income_uid and str(m.from_user.id) != str(locked_income_uid):
             return await m.reply("❌ 当前已锁定记账，非锁定人无法操作")
@@ -1365,12 +1529,10 @@ async def ledger_handler(m: types.Message):
 
         unit_amount = parsed["unit_amount"]
         target = None
-
-        # target name for display
         if m.reply_to_message and m.reply_to_message.from_user:
             target = m.reply_to_message.from_user.full_name
 
-        tx_id = add_transaction(
+        add_transaction(
             chat_id=m.chat.id,
             user_id=m.from_user.id,
             username=m.from_user.username or "",
@@ -1385,12 +1547,15 @@ async def ledger_handler(m: types.Message):
             original_text=txt
         )
 
-        await m.reply(f"✅ 已记录寄存：{fmt_num(unit_amount)}U\n#TX:{tx_id}")
         start_ts, end_ts = day_range()
-        await m.reply(report_text(m.chat.id, start_ts, end_ts, title="今日账单"), reply_markup=report_kb())
+        await send_long_text(
+            m.chat.id,
+            report_text(m.chat.id, start_ts, end_ts, title="今日账单"),
+            reply_markup=report_kb(m.chat.id)
+        )
         return
 
-    # ---------- 2) 下发 ----------
+    # ---------- 下发 ----------
     if txt.startswith("下发"):
         if locked_payout_uid and str(m.from_user.id) != str(locked_payout_uid):
             return await m.reply("❌ 当前已锁定下发，非锁定人无法操作")
@@ -1399,20 +1564,17 @@ async def ledger_handler(m: types.Message):
         if not body:
             return await m.reply("格式：下发5000 / 下发-2000 / 下发1000R / 下发1000/7.8")
 
-        # 默认：直接U
-        # 如果带 R 或 /rate 或 *fee% -> 按换算
         has_conversion = ("R" in body) or ("r" in body) or ("/" in body) or ("*" in body)
         expr = body.replace("R", "").replace("r", "")
         parsed = parse_amount_expr(expr, m.chat.id, default_direct_unit=not has_conversion)
         if not parsed:
             return await m.reply("❌ 下发格式错误")
 
-        unit_amount = parsed["unit_amount"]
         target = None
         if m.reply_to_message and m.reply_to_message.from_user:
             target = m.reply_to_message.from_user.full_name
 
-        tx_id = add_transaction(
+        add_transaction(
             chat_id=m.chat.id,
             user_id=m.from_user.id,
             username=m.from_user.username or "",
@@ -1420,29 +1582,30 @@ async def ledger_handler(m: types.Message):
             target_name=target,
             kind="payout",
             raw_amount=parsed["raw_amount"],
-            unit_amount=unit_amount,
+            unit_amount=parsed["unit_amount"],
             rate_used=parsed["rate_used"],
             fee_used=parsed["fee_used"],
             note="下发",
             original_text=txt
         )
 
-        await m.reply(f"💸 又没了～\n#TX:{tx_id}")
         start_ts, end_ts = day_range()
-        await m.reply(report_text(m.chat.id, start_ts, end_ts, title="今日账单"), reply_markup=report_kb())
+        await send_long_text(
+            m.chat.id,
+            report_text(m.chat.id, start_ts, end_ts, title="今日账单"),
+            reply_markup=report_kb(m.chat.id)
+        )
         return
 
-    # ---------- 3) 普通 +/- 记账 ----------
-    # 允许：张三+1000 / 张三 +1000 / +1000 备注 / +1000u / +10000/7.8*12%
+    # ---------- 普通 + / - 记账 ----------
     target_name, body = split_target_prefix(txt)
 
-    # 0 用于显示报表
-    if body in ("+0", "-0", "0"):
-        start_ts, end_ts = day_range()
-        await m.reply(report_text(m.chat.id, start_ts, end_ts, title="今日账单"), reply_markup=report_kb())
+    if not body or body[0] not in ("+", "-"):
         return
 
-    # 允许“记账备注”形式：+1000 备注
+    if locked_income_uid and str(m.from_user.id) != str(locked_income_uid):
+        return await m.reply("❌ 当前已锁定记账，非锁定人无法操作")
+
     note = ""
     if " " in body:
         first_part, note = body.split(" ", 1)
@@ -1451,29 +1614,19 @@ async def ledger_handler(m: types.Message):
     else:
         amount_expr = body.strip()
 
-    if not amount_expr or amount_expr[0] not in ("+", "-"):
-        return
-
-    # 记账锁定
-    if locked_income_uid and str(m.from_user.id) != str(locked_income_uid):
-        return await m.reply("❌ 当前已锁定记账，非锁定人无法操作")
-
     parsed = parse_amount_expr(amount_expr, m.chat.id, default_direct_unit=False)
     if not parsed:
         return await m.reply("❌ 记账格式错误")
 
-    # 如果是 +7777u 也会走这里，unit_amount 直接保存
-    unit_amount = parsed["unit_amount"]
     kind = "income" if amount_expr.startswith("+") else "payout"
 
-    # target_name 优先：命令前缀
     if not target_name:
         if m.reply_to_message and m.reply_to_message.from_user:
             target_name = m.reply_to_message.from_user.full_name
         else:
             target_name = ""
 
-    tx_id = add_transaction(
+    add_transaction(
         chat_id=m.chat.id,
         user_id=m.from_user.id,
         username=m.from_user.username or "",
@@ -1481,21 +1634,20 @@ async def ledger_handler(m: types.Message):
         target_name=target_name,
         kind=kind,
         raw_amount=parsed["raw_amount"],
-        unit_amount=unit_amount,
+        unit_amount=parsed["unit_amount"],
         rate_used=parsed["rate_used"],
         fee_used=parsed["fee_used"],
         note=note,
         original_text=txt
     )
 
-    if kind == "income":
-        ack = "💰 来钱了～"
-    else:
-        ack = "💸 又没了～"
-
-    await m.reply(f"{ack}\n#TX:{tx_id}")
     start_ts, end_ts = day_range()
-    await m.reply(report_text(m.chat.id, start_ts, end_ts, title="今日账单"), reply_markup=report_kb())
+    await send_long_text(
+        m.chat.id,
+        report_text(m.chat.id, start_ts, end_ts, title="今日账单"),
+        reply_markup=report_kb(m.chat.id)
+    )
+    return
 
 
 # ================= REPORT BUTTON =================
@@ -1509,42 +1661,43 @@ async def report_full_cb(c: types.CallbackQuery):
         return await c.answer("无权限", show_alert=True)
 
     start_ts, end_ts = day_range()
-    await c.message.reply(report_text(c.message.chat.id, start_ts, end_ts, title="今日账单"), reply_markup=report_kb())
+    await c.message.reply(report_text(c.message.chat.id, start_ts, end_ts, title="今日账单"), reply_markup=report_kb(c.message.chat.id))
     await c.answer()
 
 
-# ================= GENERAL QUERY / CONFIG HELP =================
-@dp.message(lambda m: m.text and m.text == "管理客服")
-async def show_support(m: types.Message):
-    await m.reply("👨‍💼 管理客服：请在这里填你的客服联系方式。")
+# ================= USER JOIN =================
+@dp.message(lambda m: m.new_chat_members)
+async def new_members(m: types.Message):
+    ensure_group(m)
+    text = f"欢迎 {', '.join([u.full_name for u in m.new_chat_members])} 来到本群。\n记账机器人已就绪。"
+    try:
+        await m.reply(text)
+    except:
+        pass
 
 
-@dp.message(lambda m: m.text and m.text == "群发广播")
-async def menu_broadcast_text(m: types.Message, state: FSMContext):
-    # 复用上面的广播逻辑
-    if is_private(m):
-        if get_admin(m.from_user.id) != "super":
-            return await m.answer("❌ 只有超级管理员可在私聊里全局群发。")
-        scope = "all"
-        target_chat_id = -1
-    else:
-        ensure_group(m)
-        if not is_admin_or_operator(m.chat.id, m.from_user):
-            return await m.reply("❌ 无权限")
-        scope = "current"
-        target_chat_id = m.chat.id
-
-    await state.set_state(BroadcastFSM.waiting_content)
-    await state.update_data(scope=scope, target_chat_id=target_chat_id)
-    await m.reply("📢 请发送要广播的内容。")
+# ================= BOT JOIN =================
+@dp.my_chat_member()
+async def on_bot_member_update(e: types.ChatMemberUpdated):
+    try:
+        if e.new_chat_member.status in ("member", "administrator") and e.old_chat_member.status == "left":
+            save_group(e.chat.id, e.chat.title or "Unnamed group")
+            await bot.send_message(e.chat.id, "✅ 记账机器人已加入本群。")
+    except Exception as ex:
+        print("on_bot_member_update error:", ex)
 
 
-# ================= WEBHOOK =================
+# ================= WEBHOOK / HEALTH =================
 @app.post("/webhook")
 async def webhook(req: Request):
     data = await req.json()
     update = types.Update.model_validate(data)
     await dp.feed_update(bot, update)
+    return {"ok": True}
+
+
+@app.get("/healthz")
+def healthz():
     return {"ok": True}
 
 
