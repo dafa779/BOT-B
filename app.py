@@ -670,7 +670,6 @@ async def menu_trial(m: types.Message, state: FSMContext):
         "输入正确后，您将获得10分钟的机器人使用权限。"
     )
 
-
 @dp.message(TrialFSM.waiting_code)
 async def receive_trial_code(m: types.Message, state: FSMContext):
     if not m.text:
@@ -685,7 +684,7 @@ async def receive_trial_code(m: types.Message, state: FSMContext):
     if code != real_code:
         return await m.reply("❌ 激活码错误，请重试。")
 
-    expires_at = int(time.time()) + 10 * 60
+    expires_at = int(time.time()) + 10 * 60  # 10分钟
 
     add_access_user(
         user_id=m.from_user.id,
