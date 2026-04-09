@@ -5,7 +5,10 @@ DB_NAME = "data.db"
 
 
 def get_conn():
-    return sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_NAME, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    return conn
 
 
 def init_db():
@@ -77,6 +80,22 @@ def init_db():
         undone INTEGER DEFAULT 0
     )
     """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS access_users (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        granted_by INTEGER,
+        granted_at INTEGER,
+        expires_at INTEGER
+    )
+    """)
+
+    # Migrations
+    try:
+        cur.execute("ALTER TABLE access_users ADD COLUMN expires_at INTEGER")
+    except sqlite3.OperationalError:
+        pass
 
     conn.commit()
     conn.close()
@@ -176,6 +195,26 @@ def delete_setting(chat_id, key):
     conn.close()
 
 
+def set_button_config(chat_id, idx, text, url):
+    set_setting(chat_id, f"btn{idx}_text", text)
+    set_setting(chat_id, f"btn{idx}_url", url)
+
+
+def get_button_config(chat_id, idx):
+    text = get_setting(chat_id, f"btn{idx}_text", "")
+    url = get_setting(chat_id, f"btn{idx}_url", "")
+    return text, url
+
+
+def get_all_button_configs(chat_id):
+    data = []
+    for i in range(1, 5):
+        text, url = get_button_config(chat_id, i)
+        if text and url:
+            data.append((text, url))
+    return data
+
+
 # ================= OPERATORS =================
 def add_operator(chat_id, user_id=None, username=None, role="operator"):
     conn = get_conn()
@@ -183,6 +222,9 @@ def add_operator(chat_id, user_id=None, username=None, role="operator"):
     cur.execute("""
     INSERT INTO operators(chat_id, user_id, username, role)
     VALUES (?, ?, ?, ?)
+    ON CONFLICT(chat_id, user_id) DO UPDATE SET
+        username=excluded.username,
+        role=excluded.role
     """, (chat_id, user_id, username, role))
     conn.commit()
     conn.close()
@@ -236,11 +278,11 @@ def get_global_operators():
 
 
 def is_operator(chat_id, user_id=None, username=None):
-    all_rows = []
-    all_rows.extend(get_operators(chat_id))
-    all_rows.extend(get_global_operators())
+    rows = []
+    rows.extend(get_operators(chat_id))
+    rows.extend(get_global_operators())
 
-    for uid, uname, role in all_rows:
+    for uid, uname, role in rows:
         if user_id is not None and uid is not None and uid == user_id:
             return True
         if username and uname and uname.lower() == username.lower():
@@ -397,6 +439,85 @@ def get_transactions(chat_id, start_ts=None, end_ts=None, user_id=None, keyword=
     sql += " ORDER BY created_at ASC, id ASC"
 
     cur.execute(sql, params)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+# ================= ACCESS USERS =================
+def set_trial_code(code):
+    set_setting(-1, "trial_code", code)
+
+
+def get_trial_code():
+    return get_setting(-1, "trial_code", "")
+
+
+def add_access_user(user_id, username="", granted_by=None, expires_at=None):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    INSERT INTO access_users(user_id, username, granted_by, granted_at, expires_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET
+        username=excluded.username,
+        granted_by=excluded.granted_by,
+        granted_at=excluded.granted_at,
+        expires_at=excluded.expires_at
+    """, (user_id, username or "", granted_by, int(time.time()), expires_at))
+    conn.commit()
+    conn.close()
+
+
+def remove_access_user(user_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM access_users WHERE user_id=?", (user_id,))
+    conn.commit()
+    conn.close()
+
+
+def has_access_user(user_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT expires_at FROM access_users WHERE user_id=?", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        return False
+
+    expires_at = row[0]
+    if expires_at is None:
+        return True
+
+    return int(time.time()) < int(expires_at)
+
+
+def get_access_users():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT user_id, username, granted_by, granted_at, expires_at
+    FROM access_users
+    ORDER BY granted_at DESC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_expired_access_users(now_ts=None):
+    if now_ts is None:
+        now_ts = int(time.time())
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT user_id, username, expires_at
+    FROM access_users
+    WHERE expires_at IS NOT NULL AND expires_at <= ?
+    """, (now_ts,))
     rows = cur.fetchall()
     conn.close()
     return rows
