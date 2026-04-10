@@ -3,6 +3,9 @@ import re
 import time
 import asyncio
 import requests
+import requests
+from io import BytesIO
+from PIL import Image, ImageDraw, ImageFont
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
