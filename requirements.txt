@@ -4,3 +4,4 @@ aiogram
 python-dotenv
 psycopg2-binary
 requests
+pillow
