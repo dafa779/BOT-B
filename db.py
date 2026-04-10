@@ -659,3 +659,53 @@ def mark_access_reminded_1h(user_id):
     conn.commit()
     cur.close()
     conn.close()
+
+def add_wallet_check(chat_id, user_id, username, full_name, address, trx_balance, usdt_balance, tx_count):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    INSERT INTO wallet_checks(
+        chat_id, user_id, username, full_name, address,
+        trx_balance, usdt_balance, tx_count, created_at
+    )
+    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+    """, (
+        chat_id,
+        user_id,
+        username or "",
+        full_name or "",
+        address or "",
+        trx_balance,
+        usdt_balance,
+        tx_count,
+        int(time.time())
+    ))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_wallet_checks_page(limit=10, offset=0):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT id, chat_id, user_id, username, full_name, address,
+           trx_balance, usdt_balance, tx_count, created_at
+    FROM wallet_checks
+    ORDER BY id DESC
+    LIMIT %s OFFSET %s
+    """, (limit, offset))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def count_wallet_checks():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM wallet_checks")
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row[0] if row else 0
