@@ -6,7 +6,7 @@ from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from dotenv import load_dotenv
 
-from db import init_db, get_groups, get_transactions, summarize_transactions
+from db import init_db, get_groups, get_transactions
 
 # ================= ENV =================
 load_dotenv()
@@ -46,6 +46,35 @@ def fmt_num(x):
         return str(x)
 
 
+def summarize_transactions(txs):
+    income = [t for t in txs if t[6] == "income"]
+    payout = [t for t in txs if t[6] == "payout"]
+    reserve = [t for t in txs if t[6] == "reserve"]
+
+    total_income_unit = sum((t[8] or 0) for t in income)
+    total_payout_unit = sum((t[8] or 0) for t in payout)
+    total_reserve_unit = sum((t[8] or 0) for t in reserve)
+
+    due = total_income_unit + total_reserve_unit
+    paid = total_payout_unit
+    pending = due - paid
+
+    total_raw_income = sum((abs(t[7]) or 0) for t in income if t[7] is not None)
+
+    return {
+        "income_count": len(income),
+        "payout_count": len(payout),
+        "reserve_count": len(reserve),
+        "total_income_unit": total_income_unit,
+        "total_payout_unit": total_payout_unit,
+        "total_reserve_unit": total_reserve_unit,
+        "due": due,
+        "paid": paid,
+        "pending": pending,
+        "total_raw_income": total_raw_income,
+    }
+
+
 def parse_web_date(date_str: str | None):
     """
     date_str: YYYY-MM-DD
@@ -74,19 +103,23 @@ def get_group_title_map():
     return {int(chat_id): title for chat_id, title in get_groups()}
 
 
+# ================= RENDER PAGES =================
 def render_groups_page(token: str | None = None):
     groups = get_groups()
-
     today = datetime.now().strftime("%Y-%m-%d")
-    rows = ""
 
+    rows = ""
     for chat_id, title in groups:
+        link = f"/group/{chat_id}?date={today}"
+        if token:
+            link += f"&token={token}"
+
         rows += f"""
         <tr>
             <td>{escape(title or 'Unnamed')}</td>
             <td><span class="tag">{chat_id}</span></td>
             <td>
-                <a class="btn" href="/group/{chat_id}?date={today}{f'&token={escape(token)}' if token else ''}">
+                <a class="btn" href="{link}">
                     Xem lịch sử
                 </a>
             </td>
@@ -99,8 +132,6 @@ def render_groups_page(token: str | None = None):
             <td colspan="3" style="text-align:center;color:#9ca3af;">Chưa có nhóm nào</td>
         </tr>
         """
-
-    token_q = f"?token={token}" if token else ""
 
     html = f"""
     <!doctype html>
@@ -249,6 +280,10 @@ def render_group_history_page(chat_id: int, date_str: str | None = None, token: 
         </tr>
         """
 
+    back_link = "/groups"
+    if token:
+        back_link += f"?token={token}"
+
     html = f"""
     <!doctype html>
     <html lang="vi">
@@ -393,7 +428,7 @@ def render_group_history_page(chat_id: int, date_str: str | None = None, token: 
                     </div>
                 </div>
                 <div>
-                    <a class="btn secondary" href="/groups{('?token=' + escape(token)) if token else ''}">← Danh sách nhóm</a>
+                    <a class="btn secondary" href="{back_link}">← Danh sách nhóm</a>
                 </div>
             </div>
 
