@@ -13,13 +13,13 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import BufferedInputFile
+from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     ReplyKeyboardMarkup,
     KeyboardButton,
     BufferedInputFile,
-
+)
 from aiogram.client.default import DefaultBotProperties
 from dotenv import load_dotenv
 import uvicorn
@@ -329,11 +329,13 @@ async def check_tron_address(address: str):
 
 def make_wallet_card_image(address, sender_name, trx_balance=None, usdt_balance=None, tx_count=None, source="trongrid"):
     width, height = 1080, 1350
+
     bg = (15, 23, 42)
     card = (17, 24, 39)
     accent = (37, 99, 235)
     text = (255, 255, 255)
     muted = (156, 163, 175)
+    green = (34, 197, 94)
     yellow = (250, 204, 21)
 
     img = Image.new("RGB", (width, height), bg)
@@ -351,18 +353,21 @@ def make_wallet_card_image(address, sender_name, trx_balance=None, usdt_balance=
         mid_font = ImageFont.load_default()
         small_font = ImageFont.load_default()
 
+    # Header
     draw.rounded_rectangle((50, 50, 1030, 320), radius=35, fill=card)
     draw.rounded_rectangle((70, 70, 220, 220), radius=25, fill=accent)
     draw.text((95, 110), "TRON", font=big_font, fill=text)
     draw.text((95, 165), "CHECK", font=big_font, fill=text)
 
     draw.text((260, 90), "Địa chỉ ví TRON", font=title_font, fill=text)
-    draw.text((260, 170), f"Người gửi: {sender_name}", font=mid_font, fill=(34, 197, 94))
+    draw.text((260, 170), f"Người gửi: {sender_name}", font=mid_font, fill=green)
 
+    # Address box
     draw.rounded_rectangle((50, 380, 1030, 560), radius=30, fill=card)
     draw.text((80, 410), "Address", font=small_font, fill=muted)
     draw.text((80, 460), address, font=mid_font, fill=text)
 
+    # Info box
     draw.rounded_rectangle((50, 610, 1030, 980), radius=35, fill=card)
     draw.text((80, 640), "Thông tin ví", font=title_font, fill=text)
 
@@ -375,14 +380,16 @@ def make_wallet_card_image(address, sender_name, trx_balance=None, usdt_balance=
     y += 90
     draw.text((90, y), f"• Nguồn dữ liệu: {source}", font=small_font, fill=muted)
 
+    # Footer
     draw.text((50, 1140), "⚠️ Vui lòng kiểm tra cẩn thận trước khi chuyển tiền.", font=mid_font, fill=yellow)
     draw.text((50, 1200), "Bot tự động lưu lịch sử người gửi và địa chỉ ví.", font=small_font, fill=muted)
 
-       bio = BytesIO()
+    # Return as BufferedInputFile for aiogram 3
+    bio = BytesIO()
     img.save(bio, "PNG")
     bio.seek(0)
     return BufferedInputFile(bio.read(), filename="wallet_check.png")
-
+    
 def get_chat_setting(chat_id, key, default=None):
     v = get_setting(chat_id, key, None)
     if v is None and chat_id != -1:
@@ -1793,7 +1800,7 @@ async def tron_address_check_handler(m: types.Message):
     )
 
     sender_name = m.from_user.full_name or (m.from_user.username or "Unknown")
-    try:
+ try:
     photo = make_wallet_card_image(
         address=address,
         sender_name=sender_name,
@@ -1812,6 +1819,7 @@ async def tron_address_check_handler(m: types.Message):
 except Exception as e:
     print("send wallet photo error:", e)
     await m.reply(caption, reply_markup=kb, parse_mode="Markdown")
+    
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(
