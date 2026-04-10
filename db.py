@@ -1,5 +1,7 @@
+
 import os
 import time
+from datetime import datetime
 
 import psycopg2
 from dotenv import load_dotenv
@@ -24,6 +26,7 @@ def get_conn():
     return psycopg2.connect(DATABASE_URL, **kwargs)
 
 
+# ================= INIT =================
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
@@ -126,6 +129,36 @@ def init_db():
         usdt_balance DOUBLE PRECISION,
         tx_count INTEGER,
         created_at BIGINT NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS rental_orders (
+        id BIGSERIAL PRIMARY KEY,
+        order_code TEXT UNIQUE,
+        user_id BIGINT,
+        username TEXT,
+        full_name TEXT,
+        category_key TEXT,
+        category_title TEXT,
+        plan_key TEXT,
+        plan_label TEXT,
+        amount DOUBLE PRECISION,
+        status TEXT DEFAULT 'pending',
+        created_at BIGINT,
+        paid_at BIGINT,
+        expires_at BIGINT,
+        note TEXT
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS expiry_notices (
+        id BIGSERIAL PRIMARY KEY,
+        user_id BIGINT,
+        notice_key TEXT,
+        created_at BIGINT,
+        UNIQUE(user_id, notice_key)
     )
     """)
 
@@ -675,6 +708,16 @@ def mark_access_reminded_1h(user_id):
     cur.close()
     conn.close()
 
+
+def has_claimed_free_trial(user_id):
+    return has_trial_claimed(user_id)
+
+
+def mark_claimed_free_trial(user_id):
+    return mark_trial_claimed(user_id, "")
+
+
+# ================= WALLET CHECKS =================
 def add_wallet_check(chat_id, user_id, username, full_name, address, trx_balance, usdt_balance, tx_count):
     conn = get_conn()
     cur = conn.cursor()
@@ -724,3 +767,174 @@ def count_wallet_checks():
     cur.close()
     conn.close()
     return row[0] if row else 0
+
+
+# ================= RENTAL ORDERS =================
+def generate_rental_order_code():
+    today = datetime.now().strftime("%Y%m%d")
+    prefix = f"RB{today}"
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM rental_orders
+        WHERE order_code LIKE %s
+    """, (f"{prefix}-%",))
+    count = cur.fetchone()[0] or 0
+    cur.close()
+    conn.close()
+
+    return f"{prefix}-{count + 1:04d}"
+
+
+def create_rental_order(user_id, username, full_name, category_key, category_title, plan_key, plan_label, amount, note=""):
+    order_code = generate_rental_order_code()
+    created_at = int(time.time())
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO rental_orders (
+            order_code, user_id, username, full_name,
+            category_key, category_title, plan_key, plan_label,
+            amount, status, created_at, paid_at, expires_at, note
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s, NULL, NULL, %s)
+    """, (
+        order_code, user_id, username, full_name,
+        category_key, category_title, plan_key, plan_label,
+        amount, created_at, note
+    ))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return order_code
+
+
+def get_rental_order(order_code):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT order_code, user_id, username, full_name, category_key, category_title,
+               plan_key, plan_label, amount, status, created_at, paid_at, expires_at, note
+        FROM rental_orders
+        WHERE order_code = %s
+    """, (order_code,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row
+
+
+def get_pending_rental_orders(limit=50):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT order_code, user_id, username, full_name, category_title, plan_label, amount, created_at
+        FROM rental_orders
+        WHERE status = 'pending'
+        ORDER BY created_at DESC
+        LIMIT %s
+    """, (limit,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def get_rental_orders_by_status(status=None, limit=50):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if status:
+        cur.execute("""
+            SELECT order_code, user_id, username, full_name, category_title, plan_label,
+                   amount, status, created_at, paid_at, expires_at
+            FROM rental_orders
+            WHERE status = %s
+            ORDER BY created_at DESC
+            LIMIT %s
+        """, (status, limit))
+    else:
+        cur.execute("""
+            SELECT order_code, user_id, username, full_name, category_title, plan_label,
+                   amount, status, created_at, paid_at, expires_at
+            FROM rental_orders
+            ORDER BY created_at DESC
+            LIMIT %s
+        """, (limit,))
+
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def mark_rental_order_paid(order_code, expires_at=None):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE rental_orders
+        SET status = 'paid', paid_at = %s, expires_at = %s
+        WHERE order_code = %s
+    """, (int(time.time()), expires_at, order_code))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def mark_rental_order_rejected(order_code):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE rental_orders
+        SET status = 'rejected'
+        WHERE order_code = %s
+    """, (order_code,))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_access_user_by_id(user_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT user_id, username, granted_by, granted_at, expires_at
+        FROM access_users
+        WHERE user_id = %s
+    """, (user_id,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row
+
+
+# ================= EXPIRY NOTICES =================
+def has_expiry_notice(user_id, notice_key):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT 1
+        FROM expiry_notices
+        WHERE user_id = %s AND notice_key = %s
+        LIMIT 1
+    """, (user_id, notice_key))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row is not None
+
+
+def add_expiry_notice(user_id, notice_key):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO expiry_notices(user_id, notice_key, created_at)
+        VALUES (%s, %s, %s)
+        ON CONFLICT(user_id, notice_key) DO NOTHING
+    """, (user_id, notice_key, int(time.time())))
+    conn.commit()
+    cur.close()
+    conn.close()
