@@ -128,7 +128,7 @@ def fmt_num(x):
             return str(int(x))
         return f"{x:.2f}".rstrip("0").rstrip(".")
     except Exception:
-       return str(x)
+        return str(x)
         
 TRON_ADDR_RE = re.compile(r"\bT[1-9A-HJ-NP-Za-km-z]{33}\b")
 USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
