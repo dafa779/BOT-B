@@ -378,11 +378,10 @@ def make_wallet_card_image(address, sender_name, trx_balance=None, usdt_balance=
     draw.text((50, 1140), "⚠️ Vui lòng kiểm tra cẩn thận trước khi chuyển tiền.", font=mid_font, fill=yellow)
     draw.text((50, 1200), "Bot tự động lưu lịch sử người gửi và địa chỉ ví.", font=small_font, fill=muted)
 
-    bio = BytesIO()
-    bio.name = "wallet_check.png"
+       bio = BytesIO()
     img.save(bio, "PNG")
     bio.seek(0)
-    return bio
+    return BufferedInputFile(bio.read(), filename="wallet_check.png")
 
 def get_chat_setting(chat_id, key, default=None):
     v = get_setting(chat_id, key, None)
