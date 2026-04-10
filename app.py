@@ -1793,6 +1793,7 @@ async def tron_address_check_handler(m: types.Message):
     )
 
     sender_name = m.from_user.full_name or (m.from_user.username or "Unknown")
+    try:
     photo = make_wallet_card_image(
         address=address,
         sender_name=sender_name,
@@ -1802,6 +1803,15 @@ async def tron_address_check_handler(m: types.Message):
         source=info["source"]
     )
 
+    await m.answer_photo(
+        photo=photo,
+        caption=caption,
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
+except Exception as e:
+    print("send wallet photo error:", e)
+    await m.reply(caption, reply_markup=kb, parse_mode="Markdown")
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(
