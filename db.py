@@ -114,7 +114,7 @@ def init_db():
     )
     """)
 
-        cur.execute("""
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS wallet_checks (
         id BIGSERIAL PRIMARY KEY,
         chat_id BIGINT,
@@ -128,7 +128,7 @@ def init_db():
         created_at BIGINT NOT NULL
     )
     """)
-    
+
     conn.commit()
     cur.close()
     conn.close()
