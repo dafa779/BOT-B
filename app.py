@@ -924,8 +924,11 @@ async def menu_support(m: types.Message):
 
 @dp.message(lambda m: m.text == "地址查询")
 async def menu_address_query(m: types.Message):
-    await m.answer("此版本未开放外部地址查询功能。")
-
+    await m.reply(
+        "🔍 请发送 TRON 地址进行查询。\n\n"
+        "示例：\n"
+        "TSPpLmYuFXLi6GU1W4uyG6NKGbdWPw886U"
+    )
 
 @dp.message(lambda m: m.text == "分组功能")
 async def menu_group_func(m: types.Message):
