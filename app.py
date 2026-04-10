@@ -13,13 +13,13 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import (
+from aiogram.types import BufferedInputFile
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     ReplyKeyboardMarkup,
     KeyboardButton,
     BufferedInputFile,
-)
+
 from aiogram.client.default import DefaultBotProperties
 from dotenv import load_dotenv
 import uvicorn
