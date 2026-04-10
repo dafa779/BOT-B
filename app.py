@@ -19,6 +19,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
     KeyboardButton,
     BufferedInputFile,
+    CopyTextButton,
 )
 from aiogram.client.default import DefaultBotProperties
 from dotenv import load_dotenv
@@ -67,7 +68,6 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", "8080"))
 SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID", "0") or 0)
-
 BASE_URL = (os.getenv("RENDER_EXTERNAL_URL") or os.getenv("BASE_URL") or "").rstrip("/")
 
 if not BOT_TOKEN:
@@ -262,27 +262,31 @@ async def check_tron_address(address: str):
             "user-agent": "Mozilla/5.0",
         }
 
-        try:
-            url = f"https://api.trongrid.io/v1/accounts/{address}"
-            r = requests.get(url, timeout=15, headers=headers)
-            if r.ok:
-                payload = r.json()
-                acc = _pick_account(payload)
-                if acc:
-                    return {"source": "trongrid", "account": acc}
-        except:
-            pass
+        tron_grid_key = os.getenv("TRONGRID_API_KEY")
+        if tron_grid_key:
+            headers["TRON-PRO-API-KEY"] = tron_grid_key
 
-        try:
-            url = f"https://apilist.tronscanapi.com/api/account?address={address}"
-            r = requests.get(url, timeout=15, headers=headers)
-            if r.ok:
+        sources = [
+            f"https://api.trongrid.io/v1/accounts/{address}",
+            f"https://apilist.tronscanapi.com/api/account?address={address}",
+        ]
+
+        for url in sources:
+            try:
+                r = requests.get(url, timeout=15, headers=headers)
+                print("wallet api url:", url, "status:", r.status_code)
+
+                if not r.ok:
+                    print("wallet api text:", r.text[:200])
+                    continue
+
                 payload = r.json()
                 acc = _pick_account(payload)
                 if acc:
-                    return {"source": "tronscan", "account": acc}
-        except:
-            pass
+                    source_name = "trongrid" if "trongrid" in url else "tronscan"
+                    return {"source": source_name, "account": acc}
+            except Exception as e:
+                print("wallet api error:", url, e)
 
         return None
 
@@ -296,7 +300,8 @@ async def check_tron_address(address: str):
     try:
         if acc.get("balance") is not None:
             trx_balance = float(acc.get("balance")) / 1_000_000
-    except:
+    except Exception as e:
+        print("trx_balance parse error:", e)
         trx_balance = None
 
     usdt_balance = _parse_trc20_usdt(acc)
@@ -538,31 +543,40 @@ def parse_block_fields(body: str):
     return data
 
 
+def trial_claim_key(user_id: int):
+    return f"trial_claimed:{user_id}"
+
+
+def has_claimed_free_trial(user_id: int):
+    return str(get_setting(-1, trial_claim_key(user_id), "0")) == "1"
+
+
+def mark_claimed_free_trial(user_id: int):
+    set_setting(-1, trial_claim_key(user_id), "1")
+
+
 def menu_kb():
     return ReplyKeyboardMarkup(
         keyboard=[
+            [KeyboardButton(text="🔥 开始记账")],
             [
-                KeyboardButton(text="开始记账"),
-                KeyboardButton(text="申请试用"),
-                KeyboardButton(text="使用说明"),
+                KeyboardButton(text="💎 申请试用"),
+                KeyboardButton(text="📝 使用说明"),
             ],
             [
-                KeyboardButton(text="群发广播"),
-                KeyboardButton(text="分组功能"),
-                KeyboardButton(text="自助续费"),
+                KeyboardButton(text="📈 实时U价"),
+                KeyboardButton(text="🔍 地址查询"),
             ],
             [
-                KeyboardButton(text="实时U价"),
-                KeyboardButton(text="地址查询"),
-                KeyboardButton(text="管理客服"),
+                KeyboardButton(text="🔑 自助续费"),
+                KeyboardButton(text="📋 复制命令"),
             ],
             [
-                KeyboardButton(text="总账单"),
-                KeyboardButton(text="账单"),
-                KeyboardButton(text="撤销"),
+                KeyboardButton(text="📣 群发广播"),
             ],
         ],
-        resize_keyboard=True
+        resize_keyboard=True,
+        is_persistent=True
     )
 
 
@@ -584,6 +598,41 @@ def start_inline_kb(user_id=None):
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+def copy_cmd_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📋 复制：开始", copy_text=CopyTextButton(text="开始")),
+            InlineKeyboardButton(text="📋 复制：总账单", copy_text=CopyTextButton(text="总账单")),
+        ],
+        [
+            InlineKeyboardButton(text="📋 复制：设置汇率190", copy_text=CopyTextButton(text="设置汇率190")),
+            InlineKeyboardButton(text="📋 复制：设置费率7", copy_text=CopyTextButton(text="设置费率7")),
+        ],
+        [
+            InlineKeyboardButton(text="📋 复制：地址查询", copy_text=CopyTextButton(text="地址查询")),
+            InlineKeyboardButton(text="📋 复制：撤销", copy_text=CopyTextButton(text="撤销")),
+        ],
+        [
+            InlineKeyboardButton(text="📋 复制：群发广播", copy_text=CopyTextButton(text="群发广播")),
+            InlineKeyboardButton(text="📋 复制：使用说明", copy_text=CopyTextButton(text="使用说明")),
+        ],
+    ])
+
+
+def admin_copy_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="➕ 添加ADMIN", copy_text=CopyTextButton(text="/addadmin 123456789")),
+            InlineKeyboardButton(text="➖ 删除ADMIN", copy_text=CopyTextButton(text="/deladmin 123456789")),
+            InlineKeyboardButton(text="📋 ADMIN列表", copy_text=CopyTextButton(text="/admins")),
+        ],
+        [
+            InlineKeyboardButton(text="🔑 创建续费码", copy_text=CopyTextButton(text="/settrialcode ABC123")),
+            InlineKeyboardButton(text="🗑 收回续费码", copy_text=CopyTextButton(text="/revoketrialcode")),
+        ],
+    ])
+
+
 def report_kb(chat_id):
     buttons = get_all_button_configs(chat_id)
     if not buttons:
@@ -601,7 +650,6 @@ def report_kb(chat_id):
             rows.append(row)
 
     rows.append([InlineKeyboardButton(text="📘 完整账单", callback_data="report:full")])
-
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -811,57 +859,53 @@ def report_text(chat_id, start_ts, end_ts, title="账单"):
 
 def help_text():
     return (
-        "记账机器人操作说明\n\n"
-        "基础功能\n"
-        "• 开始记账：开始\n"
-        "• 停止记账：关闭记账\n"
+        "📚 记账机器人使用说明\n\n"
+        "【基础功能】\n"
+        "• 开始记账：开始 / 🔥 开始记账\n"
+        "• 停止记账：关闭记账 / 停止记账\n"
         "• 打开发言：上课\n"
         "• 停止发言：下课\n\n"
-        "配置\n"
-        "• 设置汇率190\n"
-        "• 设置费率7\n"
-        "• 设置手续费20\n"
-        "• 代付费率-5\n"
-        "• 代付汇率8\n"
-        "• 设置火币汇率190\n"
-        "• 设置欧易汇率190\n"
-        "• 设置实时汇率190\n\n"
-        "操作员\n"
-        "• @xxxx 添加操作员\n"
-        "• @xxxx 删除操作员\n"
-        "• 显示操作员\n"
-        "• 回复某人：添加操作员 / 删除操作员\n\n"
-        "记账\n"
-        "• +10000\n"
-        "• +10000/7.8\n"
-        "• -10000\n"
-        "• -10000/7.8\n"
-        "• +7777u\n"
-        "• -7777u\n"
-        "• 下发5000\n"
-        "• 下发-2000\n"
-        "• 下发1000R\n"
-        "• +1000 空格备注\n"
-        "• P+2000 / P-1000\n\n"
-        "查看\n"
-        "• 账单 / /我\n"
-        "• 我的账单（仅操作员）\n"
+        "【参数设置】\n"
+        "• 设置汇率：设置汇率190\n"
+        "• 设置费率：设置费率7\n"
+        "• 单笔手续费：单笔手续费20\n"
+        "• 代付费率：代付费率-5\n"
+        "• 代付汇率：代付汇率8\n"
+        "• 实时汇率：设置实时汇率190\n\n"
+        "【记账指令】\n"
+        "• +1000 / -1000\n"
+        "• +1000/7.8 / -1000/7.8\n"
+        "• +7777u / -7777u\n"
+        "• 下发5000 / 下发-2000 / 下发1000R\n"
+        "• P+2000 / P-1000\n"
+        "• +1000 备注\n\n"
+        "【查看功能】\n"
         "• 总账单\n"
-        "• 上个月总账单\n"
+        "• 账单\n"
+        "• /我\n"
         "• 撤销\n"
-        "• 重置 / 清零 / 删除账单 / 结束账单\n\n"
-        "广播\n"
-        "• 群发广播\n\n"
-        "试用\n"
-        "• 申请试用\n"
-        "• 激活码试用时长：10分钟\n"
+        "• 上个月总账单\n\n"
+        "【试用与续费】\n"
+        "• 申请试用：首次可领取 24 小时免费权限\n"
+        "• 到期后：输入管理员发放的续费码继续使用\n"
+        "• 续费码可由主控管理员发放与收回\n\n"
+        "【快捷复制】\n"
+        "• 菜单里的 📋 复制命令 可一键复制常用指令\n\n"
+        "【可定制机器人】\n"
+        "• 电脑管理机器人\n"
+        "• 机器人报表机器人\n"
+        "• 客服机器人\n"
+        "• 风控提醒机器人\n"
+        "• 广播管理机器人\n"
+        "• 自动统计机器人\n\n"
+        "如需新增功能、修改界面、定制按钮，请联系管理员。"
     )
 
 
 def main_menu_text():
     return (
-        "记账机器人菜单\n\n"
-        "请点击下方按钮，或直接在群里输入指令。"
+        "📌 记账机器人菜单\n\n"
+        "请选择下方功能，或直接在群里输入指令。"
     )
 
 
@@ -877,7 +921,7 @@ async def trial_expire_loop():
                     try:
                         await bot.send_message(
                             user_id,
-                            "⏳ 您的试用权限已过期，请重新获取激活码。"
+                            "⏳ 您的试用权限已过期，请重新获取续费码。"
                         )
                     except Exception as e:
                         print("notify expired user failed:", e)
@@ -988,38 +1032,54 @@ async def start_cmd(m: types.Message):
     if not is_private(m):
         return
 
-    text = get_setting(-1, "start_text") or (
-        "📌 记账机器人菜单\n\n"
-        "请点击下方按钮，或直接在群里输入指令。"
-    )
-
+    text = get_setting(-1, "start_text") or main_menu_text()
     await m.answer(text, reply_markup=menu_kb())
-    await m.answer("➕ 添加机器人到群：", reply_markup=start_inline_kb(m.from_user.id))
+    await m.answer("📋 常用命令复制区：", reply_markup=copy_cmd_kb(), disable_web_page_preview=True)
 
 
-@dp.message(lambda m: m.text == "开始记账")
+@dp.message(lambda m: m.text in ("🔥 开始记账", "开始记账", "开始"))
 async def menu_begin(m: types.Message):
     if not is_private(m):
         return
     text = (
-        "开始记账\n\n"
-        "请把机器人添加进群，然后在群里输入：开始\n"
-        "设置汇率：设置汇率190\n"
-        "设置费率：设置费率7\n"
-        "开始后即可输入 +10000、-10000、下发5000 等。"
+        "🔥 开始记账\n\n"
+        "请把机器人添加进群，然后在群里输入：开始\n\n"
+        "常用示例：\n"
+        "• 设置汇率190\n"
+        "• 设置费率7\n"
+        "• +10000\n"
+        "• -10000\n"
+        "• 下发5000\n"
     )
     await m.answer(text, reply_markup=menu_kb())
 
 
-@dp.message(lambda m: m.text == "申请试用")
+@dp.message(lambda m: m.text in ("💎 申请试用", "申请试用"))
 async def menu_trial(m: types.Message, state: FSMContext):
+    if get_admin(m.from_user.id) == "super":
+        return await m.answer("🛠 管理员快捷面板", reply_markup=admin_copy_kb())
+
     if has_bot_access(m.from_user.id):
         return await m.reply("✅ 您已拥有使用权限。")
 
+    if not has_claimed_free_trial(m.from_user.id):
+        expires_at = int(time.time()) + 24 * 60 * 60
+        add_access_user(
+            user_id=m.from_user.id,
+            username=m.from_user.username or "",
+            granted_by=None,
+            expires_at=expires_at
+        )
+        mark_claimed_free_trial(m.from_user.id)
+        return await m.reply(
+            "✅ 您已获得 24 小时免费试用权限。\n"
+            "到期后请向管理员获取续费码。"
+        )
+
     await state.set_state(TrialFSM.waiting_code)
     await m.reply(
-        "🔑 请输入激活码。\n\n"
-        "输入正确后，您将获得10分钟的机器人使用权限。"
+        "⏳ 您的免费试用已用过或已到期。\n\n"
+        "请输入管理员发送的续费码继续使用。"
     )
 
 
@@ -1032,64 +1092,83 @@ async def receive_trial_code(m: types.Message, state: FSMContext):
     real_code = (get_trial_code() or "").strip()
 
     if not real_code:
-        return await m.reply("❌ 当前未设置激活码，请联系管理员。")
+        return await m.reply("❌ 当前未设置续费码，请联系管理员。")
 
     if code != real_code:
-        return await m.reply("❌ 激活码错误，请重试。")
-
-    expires_at = int(time.time()) + 10 * 60
+        return await m.reply("❌ 续费码错误，请重试。")
 
     add_access_user(
         user_id=m.from_user.id,
         username=m.from_user.username or "",
         granted_by=None,
-        expires_at=expires_at
+        expires_at=None
     )
 
     await state.clear()
-    await m.reply("✅ 激活成功，您已获得10分钟的机器人使用权限。")
+    await m.reply("✅ 续费成功，您已获得长期使用权限。")
 
 
-@dp.message(lambda m: m.text == "自助续费")
+@dp.message(lambda m: m.text in ("🔑 自助续费", "自助续费"))
 async def menu_renew(m: types.Message):
+    if get_admin(m.from_user.id) == "super":
+        return await m.answer("🛠 续费管理面板", reply_markup=admin_copy_kb())
+
     await m.answer("🔑 自助续费请联系管理员。")
 
 
-@dp.message(lambda m: m.text == "实时U价")
+@dp.message(lambda m: m.text in ("📈 实时U价", "实时U价"))
 async def menu_rate(m: types.Message):
     rate = get_setting(-1, "rate", "190")
     fee = get_setting(-1, "fee", "7")
-    await m.answer(f"当前全局汇率：{rate}\n当前全局费率：{fee}%")
+    text = (
+        f"📈 当前全局汇率：{rate}\n"
+        f"📊 当前全局费率：{fee}%\n\n"
+        "【使用示例】\n"
+        "• +1000\n"
+        "• +1000/7.8\n"
+        "• -1000\n"
+        "• 下发5000\n"
+        "• P+2000\n"
+    )
+    await m.answer(text, reply_markup=copy_cmd_kb())
 
 
-@dp.message(lambda m: m.text == "管理客服")
-async def menu_support(m: types.Message):
-    await m.answer("👨‍💼 管理客服：请填写你自己的客服联系方式。")
+@dp.message(lambda m: m.text in ("📝 使用说明", "使用说明", "/help"))
+async def menu_help(m: types.Message):
+    await m.reply(help_text(), reply_markup=menu_kb())
 
 
-@dp.message(lambda m: m.text == "地址查询")
+@dp.message(lambda m: m.text in ("🔍 地址查询", "地址查询"))
 async def menu_address_query(m: types.Message):
     await m.reply(
-        "🔍 请发送 TRON 地址进行查询。\n\n"
+        "🔍 请直接发送 TRON 地址进行查询。\n\n"
         "示例：\n"
         "TSPpLmYuFXLi6GU1W4uyG6NKGbdWPw886U"
     )
 
 
-@dp.message(lambda m: m.text == "分组功能")
-async def menu_group_func(m: types.Message):
-    await m.answer(
-        "分组功能\n\n"
-        "• 本版本支持按群记账\n"
-        "• 同时可设置操作员\n"
-        "• 也可使用全局操作员\n"
-        "• 账单统计会按当前群进行"
-    )
+@dp.message(lambda m: m.text in ("📋 复制命令", "复制命令"))
+async def menu_copy(m: types.Message):
+    await m.reply("📋 常用命令复制区：", reply_markup=copy_cmd_kb())
 
 
-@dp.message(lambda m: m.text == "使用说明")
-async def menu_help(m: types.Message):
-    await m.reply(help_text(), reply_markup=menu_kb())
+@dp.message(lambda m: m.text == "📣 群发广播" or m.text == "群发广播")
+async def menu_broadcast(m: types.Message, state: FSMContext):
+    if is_private(m):
+        if get_admin(m.from_user.id) != "super":
+            return await m.answer("❌ 只有超级管理员可在私聊里全局群发。")
+        scope = "all"
+        target_chat_id = -1
+    else:
+        ensure_group(m)
+        if not is_admin_or_operator(m.chat.id, m.from_user):
+            return await m.reply("❌ 无权限")
+        scope = "current"
+        target_chat_id = m.chat.id
+
+    await state.set_state(BroadcastFSM.waiting_content)
+    await state.update_data(scope=scope, target_chat_id=target_chat_id)
+    await m.reply("📢 请发送要广播的内容。")
 
 
 # ================= ADMIN / ACCESS =================
@@ -1105,6 +1184,15 @@ async def set_trial_code_cmd(m: types.Message):
     code = parts[1].strip()
     set_trial_code(code)
     await m.reply(f"✅ 已设置激活码：{code}")
+
+
+@dp.message(lambda m: m.text and is_cmd(m, "/revoketrialcode", "/deltrialcode"))
+async def revoke_trial_code_cmd(m: types.Message):
+    if get_admin(m.from_user.id) != "super":
+        return await m.reply("❌ 只有超级管理员可以收回续费码")
+
+    set_trial_code("")
+    await m.reply("✅ 已收回当前续费码")
 
 
 @dp.message(lambda m: m.text and m.text.startswith("/addaccess"))
@@ -1479,7 +1567,7 @@ async def set_buttons_cmd(m: types.Message):
     await m.reply(f"✅ 按钮已更新：{updated}个")
 
 
-@dp.message(lambda m: m.text and (m.text in ("费率", "配置", "查看配置")))
+@dp.message(lambda m: m.text and (m.text in ("费率", "配置", "查看配置", "当前配置")))
 async def show_config_cmd(m: types.Message):
     chat_id = m.chat.id if is_group_message(m) else -1
     rate = get_chat_setting(chat_id, "rate", "190")
@@ -1508,7 +1596,7 @@ async def show_config_cmd(m: types.Message):
 
 
 # ================= START / STOP / PERMISSION =================
-@dp.message(lambda m: m.text and m.text in ("开始", "开始记账", "开启记账"))
+@dp.message(lambda m: m.text and m.text in ("开始", "开始记账", "开启记账", "🔥 开始记账"))
 async def start_accounting(m: types.Message):
     if not is_group_message(m):
         return
@@ -1750,7 +1838,7 @@ async def last_month_report_cmd(m: types.Message):
 
 
 # ================= BROADCAST =================
-@dp.message(lambda m: m.text == "群发广播")
+@dp.message(lambda m: m.text == "群发广播" or m.text == "📣 群发广播")
 async def menu_broadcast(m: types.Message, state: FSMContext):
     if is_private(m):
         if get_admin(m.from_user.id) != "super":
@@ -1879,7 +1967,6 @@ async def ledger_handler(m: types.Message):
     locked_income_uid = get_chat_setting(m.chat.id, "locked_income_user_id", None)
     locked_payout_uid = get_chat_setting(m.chat.id, "locked_payout_user_id", None)
 
-    # ---------- 寄存 ----------
     if txt.startswith("P+") or txt.startswith("P-"):
         if locked_income_uid and str(m.from_user.id) != str(locked_income_uid):
             return await m.reply("❌ 当前已锁定记账，非锁定人无法操作")
@@ -1916,7 +2003,6 @@ async def ledger_handler(m: types.Message):
         )
         return
 
-    # ---------- 下发 ----------
     if txt.startswith("下发"):
         if locked_payout_uid and str(m.from_user.id) != str(locked_payout_uid):
             return await m.reply("❌ 当前已锁定下发，非锁定人无法操作")
@@ -1958,7 +2044,6 @@ async def ledger_handler(m: types.Message):
         )
         return
 
-    # ---------- 普通 + / - 记账 ----------
     target_name, body = split_target_prefix(txt)
 
     if not body or body[0] not in ("+", "-"):
@@ -2009,21 +2094,6 @@ async def ledger_handler(m: types.Message):
         reply_markup=report_kb(m.chat.id)
     )
     return
-
-
-# ================= REPORT BUTTON =================
-@dp.callback_query(lambda c: c.data == "report:full")
-async def report_full_cb(c: types.CallbackQuery):
-    if not c.message or not c.from_user:
-        return
-    if not is_group_message(c.message):
-        return
-    if not is_admin_or_operator(c.message.chat.id, c.from_user):
-        return await c.answer("无权限", show_alert=True)
-
-    start_ts, end_ts = day_range()
-    await c.message.reply(report_text(c.message.chat.id, start_ts, end_ts, title="今日账单"), reply_markup=report_kb(c.message.chat.id))
-    await c.answer()
 
 
 # ================= WALLET LOGS =================
@@ -2145,6 +2215,132 @@ async def wallet_logs_cb(c: types.CallbackQuery):
         disable_web_page_preview=True
     )
     await c.answer()
+
+
+# ================= REPORT BUTTON =================
+@dp.callback_query(lambda c: c.data == "report:full")
+async def report_full_cb(c: types.CallbackQuery):
+    if not c.message or not c.from_user:
+        return
+    if not is_group_message(c.message):
+        return
+    if not is_admin_or_operator(c.message.chat.id, c.from_user):
+        return await c.answer("无权限", show_alert=True)
+
+    start_ts, end_ts = day_range()
+    await c.message.reply(report_text(c.message.chat.id, start_ts, end_ts, title="今日账单"), reply_markup=report_kb(c.message.chat.id))
+    await c.answer()
+
+
+# ================= TRON ADDRESS CHECK =================
+@dp.message(lambda m: m.text and extract_tron_address(m.text) is not None)
+async def tron_address_check_handler(m: types.Message):
+    if should_ignore_message(m):
+        return
+
+    address = extract_tron_address(m.text)
+    if not address:
+        return
+
+    status_msg = await m.reply("⏳ 正在查询地址，请稍候...")
+
+    try:
+        info = await check_tron_address(address)
+        if not info:
+            return await status_msg.edit_text("❌ 未能获取钱包数据，请稍后再试。")
+
+        now_ts = int(time.time())
+        warnings = []
+
+        if info["tx_count"] == 0:
+            warnings.append("该地址暂无交易记录。")
+
+        if info["trx_balance"] is not None and info["trx_balance"] < 1:
+            warnings.append("TRX余额较低，可能影响链上操作。")
+
+        if info["latest_time"]:
+            try:
+                lt = int(info["latest_time"])
+                if lt > 10_000_000_000:
+                    lt = lt // 1000
+                if now_ts - lt > 30 * 24 * 3600:
+                    warnings.append("该地址已较长时间未活跃。")
+            except:
+                pass
+
+        add_wallet_check(
+            chat_id=m.chat.id,
+            user_id=m.from_user.id,
+            username=m.from_user.username or "",
+            full_name=m.from_user.full_name or "",
+            address=address,
+            trx_balance=info["trx_balance"],
+            usdt_balance=info["usdt_balance"],
+            tx_count=info["tx_count"]
+        )
+
+        sender_name = m.from_user.full_name or (m.from_user.username or "Unknown")
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔗 关联账单",
+                    url=f"https://tronscan.org/#/address/{address}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📄 最近交易",
+                    callback_data="wallet:recent:0"
+                )
+            ]
+        ])
+
+        caption = (
+            f"🔎 TRON 地址查询\n"
+            f"• 查询人：{sender_name}\n"
+            f"• 地址：`{address}`\n"
+            f"• TRX：`{fmt_num(info['trx_balance'])}`\n"
+            f"• USDT：`{fmt_num(info['usdt_balance'])}`\n"
+            f"• 交易次数：`{info['tx_count'] if info['tx_count'] is not None else 'N/A'}`"
+        )
+
+        if warnings:
+            caption += "\n\n⚠️ 风险提示：\n" + "\n".join([f"• {w}" for w in warnings])
+
+        try:
+            photo = make_wallet_card_image(
+                address=address,
+                sender_name=sender_name,
+                trx_balance=info["trx_balance"],
+                usdt_balance=info["usdt_balance"],
+                tx_count=info["tx_count"],
+                source=info["source"],
+                create_time=info.get("create_time"),
+                latest_time=info.get("latest_time"),
+            )
+
+            await m.answer_photo(
+                photo=photo,
+                caption=caption,
+                reply_markup=kb,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            print("send wallet photo error:", e)
+            await m.reply(caption, reply_markup=kb, parse_mode="Markdown")
+
+    except Exception as e:
+        print("tron_address_check_handler error:", e)
+        try:
+            await status_msg.edit_text("❌ 查询地址时发生错误。")
+        except:
+            pass
+
+    try:
+        await status_msg.delete()
+    except:
+        pass
 
 
 # ================= USER JOIN =================
