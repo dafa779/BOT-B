@@ -47,6 +47,9 @@ from db import (
     get_members,
     add_transaction,
     get_last_transaction,
+    add_wallet_check,
+    get_wallet_checks_page,
+    count_wallet_checks,
     undo_transaction,
     clear_transactions,
     get_transactions,
@@ -126,11 +129,10 @@ def fmt_num(x):
             return str(int(x))
         return f"{x:.2f}".rstrip("0").rstrip(".")
     except Exception:
-        return str(x)
-
+       return str(x)
+        
 TRON_ADDR_RE = re.compile(r"\bT[1-9A-HJ-NP-Za-km-z]{33}\b")
-USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"  # TRC20 USDT
-
+USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
 
 def extract_tron_address(text: str):
     if not text:
@@ -144,7 +146,6 @@ def fmt_ts(ts):
         return "-"
     try:
         ts = int(ts)
-        # nếu là milisecond
         if ts > 10_000_000_000:
             ts = ts // 1000
         return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
@@ -152,22 +153,20 @@ def fmt_ts(ts):
         return "-"
 
 
+def fmt_wallet_ts(ts):
+    return fmt_ts(ts)
+
+
 def _pick_account(payload):
-    """
-    Chuẩn hoá data từ TronGrid / TronScan.
-    """
     if not isinstance(payload, dict):
         return None
 
-    # TronGrid thường có data: [ {...} ]
     if isinstance(payload.get("data"), list) and payload["data"]:
         return payload["data"][0]
 
-    # Một số API trả thẳng object
     if payload.get("address"):
         return payload
 
-    # Một số API trả data object
     if isinstance(payload.get("data"), dict):
         return payload["data"]
 
@@ -175,10 +174,6 @@ def _pick_account(payload):
 
 
 def _parse_trc20_usdt(account):
-    """
-    Cố gắng lấy số dư USDT từ các field khác nhau.
-    Nếu API không trả rõ thì return None.
-    """
     if not isinstance(account, dict):
         return None
 
@@ -246,17 +241,14 @@ def _parse_trc20_usdt(account):
 
     return None
 
+
 async def check_tron_address(address: str):
-    """
-    Kiểm tra ví TRON bằng TronGrid, fallback TronScan.
-    """
     def _fetch():
         headers = {
             "accept": "application/json",
             "user-agent": "Mozilla/5.0",
         }
 
-        # 1) TronGrid
         try:
             url = f"https://api.trongrid.io/v1/accounts/{address}"
             r = requests.get(url, timeout=15, headers=headers)
@@ -268,7 +260,6 @@ async def check_tron_address(address: str):
         except:
             pass
 
-        # 2) TronScan fallback
         try:
             url = f"https://apilist.tronscanapi.com/api/account?address={address}"
             r = requests.get(url, timeout=15, headers=headers)
@@ -290,7 +281,6 @@ async def check_tron_address(address: str):
 
     trx_balance = None
     try:
-        # TronGrid balance thường là SUN
         if acc.get("balance") is not None:
             trx_balance = float(acc.get("balance")) / 1_000_000
     except:
@@ -335,6 +325,64 @@ async def check_tron_address(address: str):
         "latest_time": latest_time,
         "raw": acc,
     }
+
+
+def make_wallet_card_image(address, sender_name, trx_balance=None, usdt_balance=None, tx_count=None, source="trongrid"):
+    width, height = 1080, 1350
+    bg = (15, 23, 42)
+    card = (17, 24, 39)
+    accent = (37, 99, 235)
+    text = (255, 255, 255)
+    muted = (156, 163, 175)
+    yellow = (250, 204, 21)
+
+    img = Image.new("RGB", (width, height), bg)
+    draw = ImageDraw.Draw(img)
+
+    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    try:
+        title_font = ImageFont.truetype(font_path, 54)
+        big_font = ImageFont.truetype(font_path, 42)
+        mid_font = ImageFont.truetype(font_path, 34)
+        small_font = ImageFont.truetype(font_path, 28)
+    except:
+        title_font = ImageFont.load_default()
+        big_font = ImageFont.load_default()
+        mid_font = ImageFont.load_default()
+        small_font = ImageFont.load_default()
+
+    draw.rounded_rectangle((50, 50, 1030, 320), radius=35, fill=card)
+    draw.rounded_rectangle((70, 70, 220, 220), radius=25, fill=accent)
+    draw.text((95, 110), "TRON", font=big_font, fill=text)
+    draw.text((95, 165), "CHECK", font=big_font, fill=text)
+
+    draw.text((260, 90), "Địa chỉ ví TRON", font=title_font, fill=text)
+    draw.text((260, 170), f"Người gửi: {sender_name}", font=mid_font, fill=(34, 197, 94))
+
+    draw.rounded_rectangle((50, 380, 1030, 560), radius=30, fill=card)
+    draw.text((80, 410), "Address", font=small_font, fill=muted)
+    draw.text((80, 460), address, font=mid_font, fill=text)
+
+    draw.rounded_rectangle((50, 610, 1030, 980), radius=35, fill=card)
+    draw.text((80, 640), "Thông tin ví", font=title_font, fill=text)
+
+    y = 740
+    draw.text((90, y), f"• TRX: {fmt_num(trx_balance)}", font=big_font, fill=text)
+    y += 90
+    draw.text((90, y), f"• USDT: {fmt_num(usdt_balance)}", font=big_font, fill=text)
+    y += 90
+    draw.text((90, y), f"• Số giao dịch: {tx_count if tx_count is not None else 'N/A'}", font=big_font, fill=text)
+    y += 90
+    draw.text((90, y), f"• Nguồn dữ liệu: {source}", font=small_font, fill=muted)
+
+    draw.text((50, 1140), "⚠️ Vui lòng kiểm tra cẩn thận trước khi chuyển tiền.", font=mid_font, fill=yellow)
+    draw.text((50, 1200), "Bot tự động lưu lịch sử người gửi và địa chỉ ví.", font=small_font, fill=muted)
+
+    bio = BytesIO()
+    bio.name = "wallet_check.png"
+    img.save(bio, "PNG")
+    bio.seek(0)
+    return bio
 
 def get_chat_setting(chat_id, key, default=None):
     v = get_setting(chat_id, key, None)
