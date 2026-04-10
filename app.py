@@ -2,6 +2,7 @@ import os
 import re
 import time
 import asyncio
+import requests
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
@@ -124,6 +125,213 @@ def fmt_num(x):
     except Exception:
         return str(x)
 
+TRON_ADDR_RE = re.compile(r"\bT[1-9A-HJ-NP-Za-km-z]{33}\b")
+USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"  # TRC20 USDT
+
+
+def extract_tron_address(text: str):
+    if not text:
+        return None
+    m = TRON_ADDR_RE.search(text.strip())
+    return m.group(0) if m else None
+
+
+def fmt_ts(ts):
+    if not ts:
+        return "-"
+    try:
+        ts = int(ts)
+        # nếu là milisecond
+        if ts > 10_000_000_000:
+            ts = ts // 1000
+        return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+    except:
+        return "-"
+
+
+def _pick_account(payload):
+    """
+    Chuẩn hoá data từ TronGrid / TronScan.
+    """
+    if not isinstance(payload, dict):
+        return None
+
+    # TronGrid thường có data: [ {...} ]
+    if isinstance(payload.get("data"), list) and payload["data"]:
+        return payload["data"][0]
+
+    # Một số API trả thẳng object
+    if payload.get("address"):
+        return payload
+
+    # Một số API trả data object
+    if isinstance(payload.get("data"), dict):
+        return payload["data"]
+
+    return None
+
+
+def _parse_trc20_usdt(account):
+    """
+    Cố gắng lấy số dư USDT từ các field khác nhau.
+    Nếu API không trả rõ thì return None.
+    """
+    if not isinstance(account, dict):
+        return None
+
+    candidates = [
+        "trc20token_balances",
+        "trc20",
+        "tokenBalances",
+        "tokens",
+        "assetV2",
+    ]
+
+    for key in candidates:
+        items = account.get(key)
+        if not items:
+            continue
+
+        if isinstance(items, dict):
+            items = [items]
+
+        if not isinstance(items, list):
+            continue
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+
+            sym = str(
+                item.get("tokenAbbr")
+                or item.get("symbol")
+                or item.get("tokenName")
+                or item.get("name")
+                or ""
+            ).upper()
+
+            contract = str(
+                item.get("contract_address")
+                or item.get("tokenAddress")
+                or item.get("tokenId")
+                or item.get("contract")
+                or ""
+            )
+
+            if sym == "USDT" or contract == USDT_CONTRACT:
+                raw = (
+                    item.get("balance")
+                    or item.get("value")
+                    or item.get("amount")
+                    or item.get("tokenValue")
+                )
+                if raw is None:
+                    return 0
+
+                try:
+                    decimals = int(item.get("precision") or item.get("decimals") or 6)
+                except:
+                    decimals = 6
+
+                try:
+                    return float(raw) / (10 ** decimals)
+                except:
+                    try:
+                        return float(raw)
+                    except:
+                        return 0
+
+    return None
+
+async def check_tron_address(address: str):
+    """
+    Kiểm tra ví TRON bằng TronGrid, fallback TronScan.
+    """
+    def _fetch():
+        headers = {
+            "accept": "application/json",
+            "user-agent": "Mozilla/5.0",
+        }
+
+        # 1) TronGrid
+        try:
+            url = f"https://api.trongrid.io/v1/accounts/{address}"
+            r = requests.get(url, timeout=15, headers=headers)
+            if r.ok:
+                payload = r.json()
+                acc = _pick_account(payload)
+                if acc:
+                    return {"source": "trongrid", "account": acc}
+        except:
+            pass
+
+        # 2) TronScan fallback
+        try:
+            url = f"https://apilist.tronscanapi.com/api/account?address={address}"
+            r = requests.get(url, timeout=15, headers=headers)
+            if r.ok:
+                payload = r.json()
+                acc = _pick_account(payload)
+                if acc:
+                    return {"source": "tronscan", "account": acc}
+        except:
+            pass
+
+        return None
+
+    result = await asyncio.to_thread(_fetch)
+    if not result:
+        return None
+
+    acc = result["account"]
+
+    trx_balance = None
+    try:
+        # TronGrid balance thường là SUN
+        if acc.get("balance") is not None:
+            trx_balance = float(acc.get("balance")) / 1_000_000
+    except:
+        trx_balance = None
+
+    usdt_balance = _parse_trc20_usdt(acc)
+
+    tx_count = (
+        acc.get("transaction_count")
+        or acc.get("txCount")
+        or acc.get("transactionsCount")
+        or acc.get("totalTransactionCount")
+        or acc.get("trxCount")
+        or None
+    )
+    try:
+        tx_count = int(tx_count) if tx_count is not None else None
+    except:
+        tx_count = None
+
+    create_time = (
+        acc.get("create_time")
+        or acc.get("createTime")
+        or acc.get("create_time_ms")
+        or acc.get("createTimeMs")
+    )
+
+    latest_time = (
+        acc.get("latest_opration_time")
+        or acc.get("latestOperationTime")
+        or acc.get("latest_operation_time")
+        or acc.get("latest_tx_time")
+    )
+
+    return {
+        "source": result["source"],
+        "address": address,
+        "trx_balance": trx_balance,
+        "usdt_balance": usdt_balance,
+        "tx_count": tx_count,
+        "create_time": create_time,
+        "latest_time": latest_time,
+        "raw": acc,
+    }
 
 def get_chat_setting(chat_id, key, default=None):
     v = get_setting(chat_id, key, None)
