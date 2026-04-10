@@ -829,7 +829,6 @@ async def daily_cut_loop():
 
         await asyncio.sleep(60)
 
-
 # ================= LIFESPAN =================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -1049,7 +1048,6 @@ async def del_access_cmd(m: types.Message):
     remove_access_user(target_id)
     await m.reply(f"✅ 已删除使用权限：{target_id}")
 
-
 @dp.message(lambda m: m.text and m.text.startswith("/accesslist"))
 async def access_list_cmd(m: types.Message):
     if get_admin(m.from_user.id) not in ("super", "admin"):
@@ -1105,7 +1103,6 @@ async def del_admin_cmd(m: types.Message):
     remove_admin(uid)
     await m.reply(f"✅ 已删除管理员：{uid}")
 
-
 @dp.message(lambda m: m.text and is_cmd(m, "/admins"))
 async def admins_cmd(m: types.Message):
     if get_admin(m.from_user.id) not in ("super", "admin"):
@@ -1120,12 +1117,10 @@ async def admins_cmd(m: types.Message):
         text += f"• {uid} — {role}\n"
     await send_long_text(m.chat.id, text)
 
-
 @dp.message(lambda m: m.text and is_cmd(m, "/myrole"))
 async def myrole_cmd(m: types.Message):
     role = get_admin(m.from_user.id)
     await m.reply(f"你的权限：{role or '无'}")
-
 
 # ================= OPERATOR =================
 @dp.message(lambda m: m.text and ("添加操作员" in m.text or "删除操作员" in m.text or "显示操作员" in m.text))
@@ -1185,7 +1180,6 @@ async def operator_cmd(m: types.Message):
             return await m.reply("用法：@xxxx 删除操作员，或回复某人消息后输入 删除操作员")
         remove_operator(m.chat.id, user_id=uid, username=uname)
         return await m.reply(f"✅ 已删除操作员：{disp or ('@' + uname if uname else uid)}")
-
 
 @dp.message(lambda m: m.text and ("全局操作人" in m.text or "全局记员" in m.text or "全部记员" in m.text))
 async def global_operator_cmd(m: types.Message):
