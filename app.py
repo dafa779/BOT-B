@@ -18,6 +18,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     ReplyKeyboardMarkup,
     KeyboardButton,
+    BufferedInputFile,
 )
 from aiogram.client.default import DefaultBotProperties
 from dotenv import load_dotenv
