@@ -71,6 +71,9 @@ SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID", "0") or 0)
 # Render URL fallback
 BASE_URL = (os.getenv("RENDER_EXTERNAL_URL") or os.getenv("BASE_URL") or "").rstrip("/")
 
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is missing in environment variables")
+
 # ================= BOT =================
 bot = Bot(
     token=BOT_TOKEN,
@@ -120,6 +123,15 @@ def is_private(message: types.Message):
     return message.chat.type == "private"
 
 
+def should_ignore_message(m: types.Message):
+    return (
+        not m
+        or not m.from_user
+        or m.from_user.is_bot
+        or not m.text
+    )
+
+
 def fmt_num(x):
     if x is None:
         return "0"
@@ -130,7 +142,8 @@ def fmt_num(x):
         return f"{x:.2f}".rstrip("0").rstrip(".")
     except Exception:
         return str(x)
-        
+
+
 TRON_ADDR_RE = re.compile(r"\bT[1-9A-HJ-NP-Za-km-z]{33}\b")
 USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
 
@@ -384,12 +397,12 @@ def make_wallet_card_image(address, sender_name, trx_balance=None, usdt_balance=
     draw.text((50, 1140), "⚠️ Vui lòng kiểm tra cẩn thận trước khi chuyển tiền.", font=mid_font, fill=yellow)
     draw.text((50, 1200), "Bot tự động lưu lịch sử người gửi và địa chỉ ví.", font=small_font, fill=muted)
 
-    # Return as BufferedInputFile for aiogram 3
     bio = BytesIO()
     img.save(bio, "PNG")
     bio.seek(0)
     return BufferedInputFile(bio.read(), filename="wallet_check.png")
-    
+
+
 def get_chat_setting(chat_id, key, default=None):
     v = get_setting(chat_id, key, None)
     if v is None and chat_id != -1:
@@ -488,7 +501,6 @@ def start_inline_kb(user_id=None):
         [InlineKeyboardButton(text="➕ 添加机器人到群", url=add_url)]
     ]
 
-    # Chỉ chủ bot mới thấy nút tạo mã khoá
     if user_id == SUPER_ADMIN_ID:
         buttons.append([
             InlineKeyboardButton(text="🔑 创建激活码", callback_data="trial:create_code")
@@ -514,7 +526,6 @@ def report_kb(chat_id):
         if row:
             rows.append(row)
 
-    # 永远保留一个“完整账单”按钮
     rows.append([InlineKeyboardButton(text="📘 完整账单", callback_data="report:full")])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -836,6 +847,7 @@ async def daily_cut_loop():
 
         await asyncio.sleep(60)
 
+
 # ================= LIFESPAN =================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -909,6 +921,7 @@ async def start_cmd(m: types.Message):
 
     await m.answer(text, reply_markup=start_inline_kb(m.from_user.id))
 
+
 @dp.message(lambda m: m.text == "开始记账")
 async def menu_begin(m: types.Message):
     if not is_private(m):
@@ -933,6 +946,7 @@ async def menu_trial(m: types.Message, state: FSMContext):
         "🔑 请输入激活码。\n\n"
         "输入正确后，您将获得10分钟的机器人使用权限。"
     )
+
 
 @dp.message(TrialFSM.waiting_code)
 async def receive_trial_code(m: types.Message, state: FSMContext):
@@ -985,6 +999,7 @@ async def menu_address_query(m: types.Message):
         "示例：\n"
         "TSPpLmYuFXLi6GU1W4uyG6NKGbdWPw886U"
     )
+
 
 @dp.message(lambda m: m.text == "分组功能")
 async def menu_group_func(m: types.Message):
@@ -1055,6 +1070,7 @@ async def del_access_cmd(m: types.Message):
     remove_access_user(target_id)
     await m.reply(f"✅ 已删除使用权限：{target_id}")
 
+
 @dp.message(lambda m: m.text and m.text.startswith("/accesslist"))
 async def access_list_cmd(m: types.Message):
     if get_admin(m.from_user.id) not in ("super", "admin"):
@@ -1110,6 +1126,7 @@ async def del_admin_cmd(m: types.Message):
     remove_admin(uid)
     await m.reply(f"✅ 已删除管理员：{uid}")
 
+
 @dp.message(lambda m: m.text and is_cmd(m, "/admins"))
 async def admins_cmd(m: types.Message):
     if get_admin(m.from_user.id) not in ("super", "admin"):
@@ -1124,10 +1141,12 @@ async def admins_cmd(m: types.Message):
         text += f"• {uid} — {role}\n"
     await send_long_text(m.chat.id, text)
 
+
 @dp.message(lambda m: m.text and is_cmd(m, "/myrole"))
 async def myrole_cmd(m: types.Message):
     role = get_admin(m.from_user.id)
     await m.reply(f"你的权限：{role or '无'}")
+
 
 # ================= OPERATOR =================
 @dp.message(lambda m: m.text and ("添加操作员" in m.text or "删除操作员" in m.text or "显示操作员" in m.text))
@@ -1187,6 +1206,7 @@ async def operator_cmd(m: types.Message):
             return await m.reply("用法：@xxxx 删除操作员，或回复某人消息后输入 删除操作员")
         remove_operator(m.chat.id, user_id=uid, username=uname)
         return await m.reply(f"✅ 已删除操作员：{disp or ('@' + uname if uname else uid)}")
+
 
 @dp.message(lambda m: m.text and ("全局操作人" in m.text or "全局记员" in m.text or "全部记员" in m.text))
 async def global_operator_cmd(m: types.Message):
@@ -1757,7 +1777,7 @@ async def show_support(m: types.Message):
 # ================= AUTO LEDGER =================
 @dp.message(lambda m: m.text and extract_tron_address(m.text) is not None)
 async def tron_address_check_handler(m: types.Message):
-    if not m.text:
+    if should_ignore_message(m):
         return
 
     address = extract_tron_address(m.text)
@@ -1766,92 +1786,101 @@ async def tron_address_check_handler(m: types.Message):
 
     status_msg = await m.reply("⏳ Đang kiểm tra địa chỉ ví...")
 
-    info = await check_tron_address(address)
-    if not info:
-        return await status_msg.edit_text("❌ Không lấy được dữ liệu ví. Vui lòng thử lại sau.")
-
-    now_ts = int(time.time())
-    warnings = []
-
-    if info["tx_count"] == 0:
-        warnings.append("Ví chưa có giao dịch nào.")
-    if info["trx_balance"] is not None and info["trx_balance"] < 1:
-        warnings.append("Số dư TRX thấp, có thể khó thực hiện giao dịch.")
-    if info["latest_time"]:
-        try:
-            lt = int(info["latest_time"])
-            if lt > 10_000_000_000:
-                lt = lt // 1000
-            if now_ts - lt > 30 * 24 * 3600:
-                warnings.append("Ví lâu không hoạt động.")
-        except:
-            pass
-
-    # lưu lịch sử
-    add_wallet_check(
-        chat_id=m.chat.id,
-        user_id=m.from_user.id,
-        username=m.from_user.username or "",
-        full_name=m.from_user.full_name or "",
-        address=address,
-        trx_balance=info["trx_balance"],
-        usdt_balance=info["usdt_balance"],
-        tx_count=info["tx_count"]
-    )
-
-      sender_name = m.from_user.full_name or (m.from_user.username or "Unknown")
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(
-                text="🔗 Mở Tronscan",
-                url=f"https://tronscan.org/#/address/{address}"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="📄 交易记录",
-                callback_data="wallet:logs:0"
-            )
-        ]
-    ])
-
-    caption = (
-        f"🔎 TRON Address Check\n"
-        f"• Người gửi: {sender_name}\n"
-        f"• Địa chỉ: `{address}`\n"
-        f"• TRX: `{fmt_num(info['trx_balance'])}`\n"
-        f"• USDT: `{fmt_num(info['usdt_balance'])}`\n"
-        f"• Giao dịch: `{info['tx_count'] if info['tx_count'] is not None else 'N/A'}`"
-    )
-
-    if warnings:
-        caption += "\n\n⚠️ Cảnh báo:\n" + "\n".join([f"• {w}" for w in warnings])
-
     try:
-        photo = make_wallet_card_image(
+        info = await check_tron_address(address)
+        if not info:
+            return await status_msg.edit_text("❌ Không lấy được dữ liệu ví. Vui lòng thử lại sau.")
+
+        now_ts = int(time.time())
+        warnings = []
+
+        if info["tx_count"] == 0:
+            warnings.append("Ví chưa có giao dịch nào.")
+        if info["trx_balance"] is not None and info["trx_balance"] < 1:
+            warnings.append("Số dư TRX thấp, có thể khó thực hiện giao dịch.")
+        if info["latest_time"]:
+            try:
+                lt = int(info["latest_time"])
+                if lt > 10_000_000_000:
+                    lt = lt // 1000
+                if now_ts - lt > 30 * 24 * 3600:
+                    warnings.append("Ví lâu không hoạt động.")
+            except:
+                pass
+
+        # lưu lịch sử
+        add_wallet_check(
+            chat_id=m.chat.id,
+            user_id=m.from_user.id,
+            username=m.from_user.username or "",
+            full_name=m.from_user.full_name or "",
             address=address,
-            sender_name=sender_name,
             trx_balance=info["trx_balance"],
             usdt_balance=info["usdt_balance"],
-            tx_count=info["tx_count"],
-            source=info["source"]
+            tx_count=info["tx_count"]
         )
 
-        await m.answer_photo(
-            photo=photo,
-            caption=caption,
-            reply_markup=kb,
-            parse_mode="Markdown"
+        sender_name = m.from_user.full_name or (m.from_user.username or "Unknown")
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔗 Mở Tronscan",
+                    url=f"https://tronscan.org/#/address/{address}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📄 交易记录",
+                    callback_data="wallet:logs:0"
+                )
+            ]
+        ])
+
+        caption = (
+            f"🔎 TRON Address Check\n"
+            f"• Người gửi: {sender_name}\n"
+            f"• Địa chỉ: `{address}`\n"
+            f"• TRX: `{fmt_num(info['trx_balance'])}`\n"
+            f"• USDT: `{fmt_num(info['usdt_balance'])}`\n"
+            f"• Giao dịch: `{info['tx_count'] if info['tx_count'] is not None else 'N/A'}`"
         )
+
+        if warnings:
+            caption += "\n\n⚠️ Cảnh báo:\n" + "\n".join([f"• {w}" for w in warnings])
+
+        try:
+            photo = make_wallet_card_image(
+                address=address,
+                sender_name=sender_name,
+                trx_balance=info["trx_balance"],
+                usdt_balance=info["usdt_balance"],
+                tx_count=info["tx_count"],
+                source=info["source"]
+            )
+
+            await m.answer_photo(
+                photo=photo,
+                caption=caption,
+                reply_markup=kb,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            print("send wallet photo error:", e)
+            await m.reply(caption, reply_markup=kb, parse_mode="Markdown")
+
     except Exception as e:
-        print("send wallet photo error:", e)
-        await m.reply(caption, reply_markup=kb, parse_mode="Markdown")
+        print("tron_address_check_handler error:", e)
+        try:
+            await status_msg.edit_text("❌ Có lỗi khi kiểm tra ví.")
+        except:
+            pass
 
     try:
         await status_msg.delete()
     except:
         pass
+
 
 @dp.message(lambda m: m.text == "交易记录")
 async def wallet_logs_menu(m: types.Message):
@@ -1898,6 +1927,7 @@ async def wallet_logs_menu(m: types.Message):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         disable_web_page_preview=True
     )
+
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("wallet:logs:"))
 async def wallet_logs_cb(c: types.CallbackQuery):
@@ -1971,8 +2001,11 @@ async def wallet_logs_cb(c: types.CallbackQuery):
     )
     await c.answer()
 
+
 @dp.message()
 async def ledger_handler(m: types.Message):
+    if should_ignore_message(m):
+        return
     if not is_group_message(m):
         return
     if not m.text:
@@ -1987,7 +2020,6 @@ async def ledger_handler(m: types.Message):
 
     txt = m.text.strip()
 
-    # 允许 +0 显示报表
     if txt in ("+0", "-0", "0"):
         start_ts, end_ts = day_range()
         await send_long_text(
@@ -2172,10 +2204,14 @@ async def on_bot_member_update(e: types.ChatMemberUpdated):
 # ================= WEBHOOK / HEALTH =================
 @app.post("/webhook")
 async def webhook(req: Request):
-    data = await req.json()
-    update = types.Update.model_validate(data)
-    await dp.feed_update(bot, update)
-    return {"ok": True}
+    try:
+        data = await req.json()
+        update = types.Update.model_validate(data)
+        await dp.feed_update(bot, update)
+        return {"ok": True}
+    except Exception as e:
+        print("webhook error:", e)
+        return {"ok": False}
 
 
 @app.get("/healthz")
