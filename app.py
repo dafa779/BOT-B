@@ -1799,27 +1799,8 @@ async def tron_address_check_handler(m: types.Message):
         tx_count=info["tx_count"]
     )
 
-    sender_name = m.from_user.full_name or (m.from_user.username or "Unknown")
- try:
-    photo = make_wallet_card_image(
-        address=address,
-        sender_name=sender_name,
-        trx_balance=info["trx_balance"],
-        usdt_balance=info["usdt_balance"],
-        tx_count=info["tx_count"],
-        source=info["source"]
-    )
+      sender_name = m.from_user.full_name or (m.from_user.username or "Unknown")
 
-    await m.answer_photo(
-        photo=photo,
-        caption=caption,
-        reply_markup=kb,
-        parse_mode="Markdown"
-    )
-except Exception as e:
-    print("send wallet photo error:", e)
-    await m.reply(caption, reply_markup=kb, parse_mode="Markdown")
-    
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(
@@ -1847,7 +1828,25 @@ except Exception as e:
     if warnings:
         caption += "\n\n⚠️ Cảnh báo:\n" + "\n".join([f"• {w}" for w in warnings])
 
-    await m.answer_photo(photo=photo, caption=caption, reply_markup=kb, parse_mode="Markdown")
+    try:
+        photo = make_wallet_card_image(
+            address=address,
+            sender_name=sender_name,
+            trx_balance=info["trx_balance"],
+            usdt_balance=info["usdt_balance"],
+            tx_count=info["tx_count"],
+            source=info["source"]
+        )
+
+        await m.answer_photo(
+            photo=photo,
+            caption=caption,
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        print("send wallet photo error:", e)
+        await m.reply(caption, reply_markup=kb, parse_mode="Markdown")
 
     try:
         await status_msg.delete()
