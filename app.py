@@ -68,7 +68,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", "8080"))
 SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID", "0") or 0)
 
-# Render URL fallback
 BASE_URL = (os.getenv("RENDER_EXTERNAL_URL") or os.getenv("BASE_URL") or "").rstrip("/")
 
 if not BOT_TOKEN:
@@ -146,6 +145,7 @@ def fmt_num(x):
 
 TRON_ADDR_RE = re.compile(r"\bT[1-9A-HJ-NP-Za-km-z]{33}\b")
 USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+
 
 def extract_tron_address(text: str):
     if not text:
@@ -340,67 +340,137 @@ async def check_tron_address(address: str):
     }
 
 
-def make_wallet_card_image(address, sender_name, trx_balance=None, usdt_balance=None, tx_count=None, source="trongrid"):
+def make_wallet_card_image(
+    address,
+    sender_name,
+    trx_balance=None,
+    usdt_balance=None,
+    tx_count=None,
+    source="trongrid",
+    create_time=None,
+    latest_time=None
+):
     width, height = 1080, 1350
 
-    bg = (15, 23, 42)
-    card = (17, 24, 39)
-    accent = (37, 99, 235)
-    text = (255, 255, 255)
-    muted = (156, 163, 175)
-    green = (34, 197, 94)
-    yellow = (250, 204, 21)
+    top_green = (18, 185, 150)
+    top_green2 = (16, 165, 138)
+    body_bg = (20, 30, 44)
+    panel_bg = (26, 40, 58)
+    panel_bg2 = (30, 46, 66)
+    white = (245, 248, 250)
+    mute = (165, 180, 190)
+    gold = (245, 198, 76)
+    blue = (120, 185, 255)
+    green = (100, 235, 160)
+    red = (255, 120, 120)
 
-    img = Image.new("RGB", (width, height), bg)
+    img = Image.new("RGB", (width, height), body_bg)
     draw = ImageDraw.Draw(img)
 
-    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    try:
-        title_font = ImageFont.truetype(font_path, 54)
-        big_font = ImageFont.truetype(font_path, 42)
-        mid_font = ImageFont.truetype(font_path, 34)
-        small_font = ImageFont.truetype(font_path, 28)
-    except:
-        title_font = ImageFont.load_default()
-        big_font = ImageFont.load_default()
-        mid_font = ImageFont.load_default()
-        small_font = ImageFont.load_default()
+    for y in range(height):
+        if y < 330:
+            r = int(top_green[0] * (1 - y / 330) + top_green2[0] * (y / 330))
+            g = int(top_green[1] * (1 - y / 330) + top_green2[1] * (y / 330))
+            b = int(top_green[2] * (1 - y / 330) + top_green2[2] * (y / 330))
+            draw.line([(0, y), (width, y)], fill=(r, g, b))
+        else:
+            draw.line([(0, y), (width, y)], fill=body_bg)
 
-    # Header
-    draw.rounded_rectangle((50, 50, 1030, 320), radius=35, fill=card)
-    draw.rounded_rectangle((70, 70, 220, 220), radius=25, fill=accent)
-    draw.text((95, 110), "TRON", font=big_font, fill=text)
-    draw.text((95, 165), "CHECK", font=big_font, fill=text)
+    font_candidates = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKSC-Regular.otf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
 
-    draw.text((260, 90), "Địa chỉ ví TRON", font=title_font, fill=text)
-    draw.text((260, 170), f"Người gửi: {sender_name}", font=mid_font, fill=green)
+    def load_font(size):
+        for fp in font_candidates:
+            try:
+                return ImageFont.truetype(fp, size)
+            except:
+                pass
+        return ImageFont.load_default()
 
-    # Address box
-    draw.rounded_rectangle((50, 380, 1030, 560), radius=30, fill=card)
-    draw.text((80, 410), "Address", font=small_font, fill=muted)
-    draw.text((80, 460), address, font=mid_font, fill=text)
+    font_title = load_font(54)
+    font_sub = load_font(28)
+    font_mid = load_font(32)
+    font_small = load_font(24)
 
-    # Info box
-    draw.rounded_rectangle((50, 610, 1030, 980), radius=35, fill=card)
-    draw.text((80, 640), "Thông tin ví", font=title_font, fill=text)
+    def box(x1, y1, x2, y2, radius=26, fill=panel_bg, outline=None, width=2):
+        draw.rounded_rectangle((x1, y1, x2, y2), radius=radius, fill=fill, outline=outline, width=width)
 
-    y = 740
-    draw.text((90, y), f"• TRX: {fmt_num(trx_balance)}", font=big_font, fill=text)
-    y += 90
-    draw.text((90, y), f"• USDT: {fmt_num(usdt_balance)}", font=big_font, fill=text)
-    y += 90
-    draw.text((90, y), f"• Số giao dịch: {tx_count if tx_count is not None else 'N/A'}", font=big_font, fill=text)
-    y += 90
-    draw.text((90, y), f"• Nguồn dữ liệu: {source}", font=small_font, fill=muted)
+    def text(x, y, s, font, fill=white):
+        draw.text((x, y), str(s), font=font, fill=fill)
 
-    # Footer
-    draw.text((50, 1140), "⚠️ Vui lòng kiểm tra cẩn thận trước khi chuyển tiền.", font=mid_font, fill=yellow)
-    draw.text((50, 1200), "Bot tự động lưu lịch sử người gửi và địa chỉ ví.", font=small_font, fill=muted)
+    def center_text(y, s, font, fill=white):
+        bbox = draw.textbbox((0, 0), str(s), font=font)
+        w = bbox[2] - bbox[0]
+        x = (width - w) // 2
+        draw.text((x, y), str(s), font=font, fill=fill)
+
+    def fmt_time_local(ts):
+        if not ts:
+            return "N/A"
+        try:
+            ts = int(ts)
+            if ts > 10_000_000_000:
+                ts = ts // 1000
+            return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+        except:
+            return "N/A"
+
+    box(40, 35, 1040, 300, radius=36, fill=top_green2, outline=(255, 255, 255, 40), width=2)
+
+    draw.rounded_rectangle((65, 66, 170, 168), radius=24, fill=(255, 255, 255, 36), outline=(255, 255, 255, 80), width=2)
+    center_text(96, "USDT", load_font(30), fill=(14, 72, 62))
+
+    center_text(70, "USDT防篡改验证核对", font_title, fill=white)
+    center_text(144, "《请双方谨慎核对地址是否与图中一致，如有误停止付款》", font_sub, fill=(232, 247, 242))
+
+    box(90, 198, 990, 250, radius=18, fill=(60, 130, 108), outline=(220, 255, 240), width=2)
+    center_text(209, address, font_mid, fill=white)
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    center_text(258, f"Now: {now_str}", font_small, fill=(225, 245, 240))
+
+    box(40, 330, 1040, 1140, radius=34, fill=panel_bg, outline=(42, 70, 90), width=2)
+
+    text(70, 360, "🔎 查询地址：", font_mid, fill=white)
+    text(250, 360, address, font_mid, fill=blue)
+
+    text(70, 408, "📌 当前页码：第 1 页", font_mid, fill=white)
+
+    box(60, 460, 1020, 1030, radius=28, fill=panel_bg2, outline=(55, 90, 110), width=2)
+
+    tx_status = "已签名地址" if (tx_count or 0) > 0 else "未签名地址"
+    tx_status_color = green if (tx_count or 0) > 0 else red
+
+    rows = [
+        ("💡 交易次数", str(tx_count if tx_count is not None else "N/A"), white),
+        ("⏰ 首次交易", fmt_time_local(create_time), white),
+        ("🌟 最后活跃", fmt_time_local(latest_time), white),
+        ("🛡 签名状态", tx_status, tx_status_color),
+        ("🔋 能量", "剩余：0 / 0", white),
+        ("🌈 带宽", "剩余：600 / 600", white),
+        ("💰 USDT 余额", f"{fmt_num(usdt_balance)} USDT", gold),
+        ("💰 TRX 余额", f"{fmt_num(trx_balance)} TRX", gold),
+        ("📡 数据来源", str(source), mute),
+    ]
+
+    y = 500
+    gap = 58
+    for label, value, value_color in rows:
+        text(85, y, f"{label}：", font_mid, fill=white)
+        text(330, y, value, font_mid, fill=value_color)
+        y += gap
+
+    box(60, 1055, 1020, 1125, radius=22, fill=(18, 28, 40), outline=(55, 90, 110), width=2)
+    text(85, 1077, "⚠ 请务必仔细核对地址信息，确认无误后再继续操作。", font_sub, fill=gold)
 
     bio = BytesIO()
     img.save(bio, "PNG")
     bio.seek(0)
-    return BufferedInputFile(bio.read(), filename="wallet_check.png")
+    return BufferedInputFile(bio.read(), filename="usdt_check_cn.png")
 
 
 def get_chat_setting(chat_id, key, default=None):
@@ -486,6 +556,11 @@ def menu_kb():
                 KeyboardButton(text="地址查询"),
                 KeyboardButton(text="管理客服"),
             ],
+            [
+                KeyboardButton(text="总账单"),
+                KeyboardButton(text="账单"),
+                KeyboardButton(text="撤销"),
+            ],
         ],
         resize_keyboard=True
     )
@@ -515,7 +590,6 @@ def report_kb(chat_id):
         buttons = get_all_button_configs(-1)
 
     rows = []
-
     if buttons:
         row = []
         for text, url in buttons:
@@ -919,7 +993,8 @@ async def start_cmd(m: types.Message):
         "请点击下方按钮，或直接在群里输入指令。"
     )
 
-    await m.answer(text, reply_markup=start_inline_kb(m.from_user.id))
+    await m.answer(text, reply_markup=menu_kb())
+    await m.answer("➕ 添加机器人到群：", reply_markup=start_inline_kb(m.from_user.id))
 
 
 @dp.message(lambda m: m.text == "开始记账")
@@ -962,7 +1037,7 @@ async def receive_trial_code(m: types.Message, state: FSMContext):
     if code != real_code:
         return await m.reply("❌ 激活码错误，请重试。")
 
-    expires_at = int(time.time()) + 10 * 60  # 10分钟
+    expires_at = int(time.time()) + 10 * 60
 
     add_access_user(
         user_id=m.from_user.id,
@@ -1010,6 +1085,11 @@ async def menu_group_func(m: types.Message):
         "• 也可使用全局操作员\n"
         "• 账单统计会按当前群进行"
     )
+
+
+@dp.message(lambda m: m.text == "使用说明")
+async def menu_help(m: types.Message):
+    await m.reply(help_text(), reply_markup=menu_kb())
 
 
 # ================= ADMIN / ACCESS =================
@@ -1768,240 +1848,7 @@ async def broadcast_callback(c: types.CallbackQuery, state: FSMContext):
     await c.message.edit_text(f"✅ 群发完成\n成功：{ok}\n失败：{fail}")
 
 
-# ================= OTHER MENU =================
-@dp.message(lambda m: m.text and m.text == "管理客服")
-async def show_support(m: types.Message):
-    await m.reply("👨‍💼 管理客服：请在这里填你的客服联系方式。")
-
-
 # ================= AUTO LEDGER =================
-@dp.message(lambda m: m.text and extract_tron_address(m.text) is not None)
-async def tron_address_check_handler(m: types.Message):
-    if should_ignore_message(m):
-        return
-
-    address = extract_tron_address(m.text)
-    if not address:
-        return
-
-    status_msg = await m.reply("⏳ Đang kiểm tra địa chỉ ví...")
-
-    try:
-        info = await check_tron_address(address)
-        if not info:
-            return await status_msg.edit_text("❌ Không lấy được dữ liệu ví. Vui lòng thử lại sau.")
-
-        now_ts = int(time.time())
-        warnings = []
-
-        if info["tx_count"] == 0:
-            warnings.append("Ví chưa có giao dịch nào.")
-        if info["trx_balance"] is not None and info["trx_balance"] < 1:
-            warnings.append("Số dư TRX thấp, có thể khó thực hiện giao dịch.")
-        if info["latest_time"]:
-            try:
-                lt = int(info["latest_time"])
-                if lt > 10_000_000_000:
-                    lt = lt // 1000
-                if now_ts - lt > 30 * 24 * 3600:
-                    warnings.append("Ví lâu không hoạt động.")
-            except:
-                pass
-
-        # lưu lịch sử
-        add_wallet_check(
-            chat_id=m.chat.id,
-            user_id=m.from_user.id,
-            username=m.from_user.username or "",
-            full_name=m.from_user.full_name or "",
-            address=address,
-            trx_balance=info["trx_balance"],
-            usdt_balance=info["usdt_balance"],
-            tx_count=info["tx_count"]
-        )
-
-        sender_name = m.from_user.full_name or (m.from_user.username or "Unknown")
-
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🔗 Mở Tronscan",
-                    url=f"https://tronscan.org/#/address/{address}"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📄 交易记录",
-                    callback_data="wallet:logs:0"
-                )
-            ]
-        ])
-
-        caption = (
-            f"🔎 TRON Address Check\n"
-            f"• Người gửi: {sender_name}\n"
-            f"• Địa chỉ: `{address}`\n"
-            f"• TRX: `{fmt_num(info['trx_balance'])}`\n"
-            f"• USDT: `{fmt_num(info['usdt_balance'])}`\n"
-            f"• Giao dịch: `{info['tx_count'] if info['tx_count'] is not None else 'N/A'}`"
-        )
-
-        if warnings:
-            caption += "\n\n⚠️ Cảnh báo:\n" + "\n".join([f"• {w}" for w in warnings])
-
-        try:
-            photo = make_wallet_card_image(
-                address=address,
-                sender_name=sender_name,
-                trx_balance=info["trx_balance"],
-                usdt_balance=info["usdt_balance"],
-                tx_count=info["tx_count"],
-                source=info["source"]
-            )
-
-            await m.answer_photo(
-                photo=photo,
-                caption=caption,
-                reply_markup=kb,
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            print("send wallet photo error:", e)
-            await m.reply(caption, reply_markup=kb, parse_mode="Markdown")
-
-    except Exception as e:
-        print("tron_address_check_handler error:", e)
-        try:
-            await status_msg.edit_text("❌ Có lỗi khi kiểm tra ví.")
-        except:
-            pass
-
-    try:
-        await status_msg.delete()
-    except:
-        pass
-
-
-@dp.message(lambda m: m.text == "交易记录")
-async def wallet_logs_menu(m: types.Message):
-    rows = get_wallet_checks_page(limit=10, offset=0)
-    if not rows:
-        return await m.reply("暂无历史记录。")
-
-    total = count_wallet_checks()
-    buttons = []
-    text_lines = [
-        "📄 交易记录",
-        "📍 当前页码：第 1 页",
-        ""
-    ]
-
-    for row in rows:
-        _id, chat_id, user_id, username, full_name, address, trx_balance, usdt_balance, tx_count, created_at = row
-        sender = full_name or username or str(user_id)
-        tm = fmt_wallet_ts(created_at)
-
-        text_lines.append(
-            f"🕒 {tm}\n"
-            f"👤 {sender}\n"
-            f"📌 {address}\n"
-            f"💰 TRX: {fmt_num(trx_balance)} | USDT: {fmt_num(usdt_balance)}\n"
-            f"📊 交易次数: {tx_count if tx_count is not None else 'N/A'}\n"
-            f"{'—' * 24}"
-        )
-
-        buttons.append([
-            InlineKeyboardButton(
-                text=f"🔗 {address[:8]}...",
-                url=f"https://tronscan.org/#/address/{address}"
-            )
-        ])
-
-    if total > 10:
-        buttons.append([
-            InlineKeyboardButton(text="下一页 ➡️", callback_data="wallet:logs:1")
-        ])
-
-    await m.reply(
-        "\n".join(text_lines),
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-        disable_web_page_preview=True
-    )
-
-
-@dp.callback_query(lambda c: c.data and c.data.startswith("wallet:logs:"))
-async def wallet_logs_cb(c: types.CallbackQuery):
-    if not c.message or not c.from_user:
-        return
-
-    try:
-        page = int(c.data.split(":")[-1])
-    except:
-        page = 0
-
-    limit = 10
-    offset = page * limit
-
-    rows = get_wallet_checks_page(limit=limit, offset=offset)
-    if not rows:
-        return await c.message.edit_text("暂无历史记录。")
-
-    total = count_wallet_checks()
-    has_prev = page > 0
-    has_next = offset + limit < total
-
-    text_lines = [
-        "📄 交易记录",
-        f"📍 当前页码：第 {page + 1} 页",
-        ""
-    ]
-
-    buttons = []
-
-    for row in rows:
-        _id, chat_id, user_id, username, full_name, address, trx_balance, usdt_balance, tx_count, created_at = row
-        sender = full_name or username or str(user_id)
-        tm = fmt_wallet_ts(created_at)
-
-        text_lines.append(
-            f"🕒 {tm}\n"
-            f"👤 {sender}\n"
-            f"📌 {address}\n"
-            f"💰 TRX: {fmt_num(trx_balance)} | USDT: {fmt_num(usdt_balance)}\n"
-            f"📊 交易次数: {tx_count if tx_count is not None else 'N/A'}\n"
-            f"{'—' * 24}"
-        )
-
-        buttons.append([
-            InlineKeyboardButton(
-                text=f"🔗 {address[:8]}...",
-                url=f"https://tronscan.org/#/address/{address}"
-            )
-        ])
-
-    nav = []
-    if has_prev:
-        nav.append(InlineKeyboardButton(
-            text="⬅️ 上一页",
-            callback_data=f"wallet:logs:{page - 1}"
-        ))
-    if has_next:
-        nav.append(InlineKeyboardButton(
-            text="下一页 ➡️",
-            callback_data=f"wallet:logs:{page + 1}"
-        ))
-
-    if nav:
-        buttons.append(nav)
-
-    await c.message.edit_text(
-        "\n".join(text_lines),
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-        disable_web_page_preview=True
-    )
-    await c.answer()
-
-
 @dp.message()
 async def ledger_handler(m: types.Message):
     if should_ignore_message(m):
@@ -2179,6 +2026,127 @@ async def report_full_cb(c: types.CallbackQuery):
     await c.answer()
 
 
+# ================= WALLET LOGS =================
+@dp.message(lambda m: m.text == "交易记录")
+async def wallet_logs_menu(m: types.Message):
+    rows = get_wallet_checks_page(limit=10, offset=0)
+    if not rows:
+        return await m.reply("暂无历史记录。")
+
+    total = count_wallet_checks()
+    buttons = []
+    text_lines = [
+        "📄 最近交易",
+        "📍 当前页码：第 1 页",
+        ""
+    ]
+
+    for row in rows:
+        _id, chat_id, user_id, username, full_name, address, trx_balance, usdt_balance, tx_count, created_at = row
+        sender = full_name or username or str(user_id)
+        tm = fmt_wallet_ts(created_at)
+
+        text_lines.append(
+            f"🕒 {tm}\n"
+            f"👤 {sender}\n"
+            f"📌 {address}\n"
+            f"💰 TRX: {fmt_num(trx_balance)} | USDT: {fmt_num(usdt_balance)}\n"
+            f"📊 交易次数: {tx_count if tx_count is not None else 'N/A'}\n"
+            f"{'—' * 24}"
+        )
+
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"🔗 {address[:8]}...",
+                url=f"https://tronscan.org/#/address/{address}"
+            )
+        ])
+
+    if total > 10:
+        buttons.append([
+            InlineKeyboardButton(text="下一页 ➡️", callback_data="wallet:recent:1")
+        ])
+
+    await m.reply(
+        "\n".join(text_lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        disable_web_page_preview=True
+    )
+
+
+@dp.callback_query(lambda c: c.data and (c.data.startswith("wallet:logs:") or c.data.startswith("wallet:recent:")))
+async def wallet_logs_cb(c: types.CallbackQuery):
+    if not c.message or not c.from_user:
+        return
+
+    try:
+        page = int(c.data.split(":")[-1])
+    except:
+        page = 0
+
+    limit = 10
+    offset = page * limit
+
+    rows = get_wallet_checks_page(limit=limit, offset=offset)
+    if not rows:
+        return await c.message.edit_text("暂无历史记录。")
+
+    total = count_wallet_checks()
+    has_prev = page > 0
+    has_next = offset + limit < total
+
+    text_lines = [
+        "📄 最近交易",
+        f"📍 当前页码：第 {page + 1} 页",
+        ""
+    ]
+
+    buttons = []
+
+    for row in rows:
+        _id, chat_id, user_id, username, full_name, address, trx_balance, usdt_balance, tx_count, created_at = row
+        sender = full_name or username or str(user_id)
+        tm = fmt_wallet_ts(created_at)
+
+        text_lines.append(
+            f"🕒 {tm}\n"
+            f"👤 {sender}\n"
+            f"📌 {address}\n"
+            f"💰 TRX: {fmt_num(trx_balance)} | USDT: {fmt_num(usdt_balance)}\n"
+            f"📊 交易次数: {tx_count if tx_count is not None else 'N/A'}\n"
+            f"{'—' * 24}"
+        )
+
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"🔗 {address[:8]}...",
+                url=f"https://tronscan.org/#/address/{address}"
+            )
+        ])
+
+    nav = []
+    if has_prev:
+        nav.append(InlineKeyboardButton(
+            text="⬅️ 上一页",
+            callback_data=f"wallet:recent:{page - 1}"
+        ))
+    if has_next:
+        nav.append(InlineKeyboardButton(
+            text="下一页 ➡️",
+            callback_data=f"wallet:recent:{page + 1}"
+        ))
+
+    if nav:
+        buttons.append(nav)
+
+    await c.message.edit_text(
+        "\n".join(text_lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        disable_web_page_preview=True
+    )
+    await c.answer()
+
+
 # ================= USER JOIN =================
 @dp.message(lambda m: m.new_chat_members)
 async def new_members(m: types.Message):
@@ -2215,11 +2183,13 @@ async def webhook(req: Request):
 
 
 @app.get("/healthz")
+@app.head("/healthz")
 def healthz():
     return {"ok": True}
 
 
 @app.get("/")
+@app.head("/")
 def home():
     return {"status": "running"}
 
