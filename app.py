@@ -1816,7 +1816,213 @@ async def tron_address_check_handler(m: types.Message):
         lines.append("Vui lòng kiểm tra cẩn thận trước khi chuyển tiền.")
 
     await msg.edit_text("\n".join(lines), parse_mode="Markdown")
-    
+
+@dp.message(lambda m: m.text and extract_tron_address(m.text) is not None)
+async def tron_address_check_handler(m: types.Message):
+    if not m.text:
+        return
+
+    address = extract_tron_address(m.text)
+    if not address:
+        return
+
+    status_msg = await m.reply("⏳ Đang kiểm tra địa chỉ ví...")
+
+    info = await check_tron_address(address)
+    if not info:
+        return await status_msg.edit_text("❌ Không lấy được dữ liệu ví. Vui lòng thử lại sau.")
+
+    now_ts = int(time.time())
+    warnings = []
+
+    if info["tx_count"] == 0:
+        warnings.append("Ví chưa có giao dịch nào.")
+    if info["trx_balance"] is not None and info["trx_balance"] < 1:
+        warnings.append("Số dư TRX thấp, có thể khó thực hiện giao dịch.")
+    if info["latest_time"]:
+        try:
+            lt = int(info["latest_time"])
+            if lt > 10_000_000_000:
+                lt = lt // 1000
+            if now_ts - lt > 30 * 24 * 3600:
+                warnings.append("Ví lâu không hoạt động.")
+        except:
+            pass
+
+    # lưu lịch sử
+    add_wallet_check(
+        chat_id=m.chat.id,
+        user_id=m.from_user.id,
+        username=m.from_user.username or "",
+        full_name=m.from_user.full_name or "",
+        address=address,
+        trx_balance=info["trx_balance"],
+        usdt_balance=info["usdt_balance"],
+        tx_count=info["tx_count"]
+    )
+
+    sender_name = m.from_user.full_name or (m.from_user.username or "Unknown")
+    photo = make_wallet_card_image(
+        address=address,
+        sender_name=sender_name,
+        trx_balance=info["trx_balance"],
+        usdt_balance=info["usdt_balance"],
+        tx_count=info["tx_count"],
+        source=info["source"]
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="🔗 Mở Tronscan",
+                url=f"https://tronscan.org/#/address/{address}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="📄 交易记录",
+                callback_data="wallet:logs:0"
+            )
+        ]
+    ])
+
+    caption = (
+        f"🔎 TRON Address Check\n"
+        f"• Người gửi: {sender_name}\n"
+        f"• Địa chỉ: `{address}`\n"
+        f"• TRX: `{fmt_num(info['trx_balance'])}`\n"
+        f"• USDT: `{fmt_num(info['usdt_balance'])}`\n"
+        f"• Giao dịch: `{info['tx_count'] if info['tx_count'] is not None else 'N/A'}`"
+    )
+
+    if warnings:
+        caption += "\n\n⚠️ Cảnh báo:\n" + "\n".join([f"• {w}" for w in warnings])
+
+    await m.answer_photo(photo=photo, caption=caption, reply_markup=kb, parse_mode="Markdown")
+
+    try:
+        await status_msg.delete()
+    except:
+        pass
+
+@dp.message(lambda m: m.text == "交易记录")
+async def wallet_logs_menu(m: types.Message):
+    rows = get_wallet_checks_page(limit=10, offset=0)
+    if not rows:
+        return await m.reply("暂无历史记录。")
+
+    total = count_wallet_checks()
+    buttons = []
+    text_lines = [
+        "📄 交易记录",
+        "📍 当前页码：第 1 页",
+        ""
+    ]
+
+    for row in rows:
+        _id, chat_id, user_id, username, full_name, address, trx_balance, usdt_balance, tx_count, created_at = row
+        sender = full_name or username or str(user_id)
+        tm = fmt_wallet_ts(created_at)
+
+        text_lines.append(
+            f"🕒 {tm}\n"
+            f"👤 {sender}\n"
+            f"📌 {address}\n"
+            f"💰 TRX: {fmt_num(trx_balance)} | USDT: {fmt_num(usdt_balance)}\n"
+            f"📊 交易次数: {tx_count if tx_count is not None else 'N/A'}\n"
+            f"{'—' * 24}"
+        )
+
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"🔗 {address[:8]}...",
+                url=f"https://tronscan.org/#/address/{address}"
+            )
+        ])
+
+    if total > 10:
+        buttons.append([
+            InlineKeyboardButton(text="下一页 ➡️", callback_data="wallet:logs:1")
+        ])
+
+    await m.reply(
+        "\n".join(text_lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        disable_web_page_preview=True
+    )
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("wallet:logs:"))
+async def wallet_logs_cb(c: types.CallbackQuery):
+    if not c.message or not c.from_user:
+        return
+
+    try:
+        page = int(c.data.split(":")[-1])
+    except:
+        page = 0
+
+    limit = 10
+    offset = page * limit
+
+    rows = get_wallet_checks_page(limit=limit, offset=offset)
+    if not rows:
+        return await c.message.edit_text("暂无历史记录。")
+
+    total = count_wallet_checks()
+    has_prev = page > 0
+    has_next = offset + limit < total
+
+    text_lines = [
+        "📄 交易记录",
+        f"📍 当前页码：第 {page + 1} 页",
+        ""
+    ]
+
+    buttons = []
+
+    for row in rows:
+        _id, chat_id, user_id, username, full_name, address, trx_balance, usdt_balance, tx_count, created_at = row
+        sender = full_name or username or str(user_id)
+        tm = fmt_wallet_ts(created_at)
+
+        text_lines.append(
+            f"🕒 {tm}\n"
+            f"👤 {sender}\n"
+            f"📌 {address}\n"
+            f"💰 TRX: {fmt_num(trx_balance)} | USDT: {fmt_num(usdt_balance)}\n"
+            f"📊 交易次数: {tx_count if tx_count is not None else 'N/A'}\n"
+            f"{'—' * 24}"
+        )
+
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"🔗 {address[:8]}...",
+                url=f"https://tronscan.org/#/address/{address}"
+            )
+        ])
+
+    nav = []
+    if has_prev:
+        nav.append(InlineKeyboardButton(
+            text="⬅️ 上一页",
+            callback_data=f"wallet:logs:{page - 1}"
+        ))
+    if has_next:
+        nav.append(InlineKeyboardButton(
+            text="下一页 ➡️",
+            callback_data=f"wallet:logs:{page + 1}"
+        ))
+
+    if nav:
+        buttons.append(nav)
+
+    await c.message.edit_text(
+        "\n".join(text_lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        disable_web_page_preview=True
+    )
+    await c.answer()
+
 @dp.message()
 async def ledger_handler(m: types.Message):
     if not is_group_message(m):
