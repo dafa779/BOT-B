@@ -1754,68 +1754,6 @@ async def show_support(m: types.Message):
 
 
 # ================= AUTO LEDGER =================
-@dp.message(lambda m: m.text and (extract_tron_address(m.text) is not None or is_cmd(m, "/checkaddr", "/checkwallet")))
-async def tron_address_check_handler(m: types.Message):
-    if not m.text:
-        return
-
-    address = extract_tron_address(m.text)
-    if not address:
-        parts = m.text.split(maxsplit=1)
-        if len(parts) >= 2:
-            address = extract_tron_address(parts[1])
-
-    if not address:
-        return await m.reply("❌ Không thấy địa chỉ TRON hợp lệ. Địa chỉ TRON phải bắt đầu bằng `T`.")
-
-    msg = await m.reply("⏳ Đang kiểm tra địa chỉ ví...")
-
-    info = await check_tron_address(address)
-    if not info:
-        return await msg.edit_text("❌ Không lấy được dữ liệu ví. Vui lòng thử lại sau.")
-
-    now_ts = int(time.time())
-    warnings = []
-
-    # cảnh báo đơn giản
-    if info["tx_count"] == 0:
-        warnings.append("Ví chưa có giao dịch nào.")
-    if info["trx_balance"] is not None and info["trx_balance"] < 1:
-        warnings.append("Số dư TRX thấp, có thể khó thực hiện giao dịch.")
-    if info["latest_time"]:
-        try:
-            lt = int(info["latest_time"])
-            if lt > 10_000_000_000:
-                lt = lt // 1000
-            if now_ts - lt > 30 * 24 * 3600:
-                warnings.append("Ví lâu không hoạt động.")
-        except:
-            pass
-
-    lines = [
-        "🔎 **TRON Address Check**",
-        f"• Địa chỉ: `{info['address']}`",
-        f"• Nguồn: `{info['source']}`",
-        f"• TRX: `{fmt_num(info['trx_balance'])}`",
-        f"• USDT: `{fmt_num(info['usdt_balance'])}`",
-        f"• Số giao dịch: `{info['tx_count'] if info['tx_count'] is not None else 'N/A'}`",
-        f"• Tạo ví: `{fmt_ts(info['create_time'])}`",
-        f"• Hoạt động gần nhất: `{fmt_ts(info['latest_time'])}`",
-        "",
-        f"🔗 Tronscan: https://tronscan.org/#/address/{info['address']}",
-    ]
-
-    if warnings:
-        lines += [
-            "",
-            "⚠️ **Cảnh báo rủi ro**",
-        ]
-        for w in warnings:
-            lines.append(f"• {w}")
-        lines.append("Vui lòng kiểm tra cẩn thận trước khi chuyển tiền.")
-
-    await msg.edit_text("\n".join(lines), parse_mode="Markdown")
-
 @dp.message(lambda m: m.text and extract_tron_address(m.text) is not None)
 async def tron_address_check_handler(m: types.Message):
     if not m.text:
